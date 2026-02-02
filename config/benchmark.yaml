@@ -1,24 +1,35 @@
-korean:
-  - klue_nli
-  - klue_sts
-  - kobest_hellaswag
-  - kobest_copa
+# 벤치마크 설정
+# use_reasoning: true면 think_end_token="</think>" 적용하여 reasoning trace strip
 
-english:
-  - hellaswag
-  - arc_easy
-  - arc_challenge
-  - winogrande
-  - piqa
+categories:
+  korean:
+    - klue_nli
+    - klue_sts
+    - kobest_hellaswag
+    - kobest_copa
 
-math:
+  english:
+    - hellaswag
+    - arc_easy
+    - arc_challenge
+    - winogrande
+    - piqa
+
+  math:
+    - gsm8k
+    - math
+
+  reasoning:
+    - mmlu
+    - truthfulqa_mc2
+
+  code:
+    - humaneval
+    - mbpp
+
+# 개별 태스크별 reasoning 설정
+reasoning_tasks:
   - gsm8k
   - math
-
-reasoning:
-  - mmlu
-  - truthfulqa_mc2
-
-code:
   - humaneval
   - mbpp

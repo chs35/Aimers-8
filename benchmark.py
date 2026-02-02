@@ -27,6 +27,30 @@ def load_benchmarks() -> dict:
         return yaml.safe_load(f)
 
 
+def get_reasoning_tasks(benchmarks: dict) -> set:
+    """reasoning이 필요한 태스크 목록 반환"""
+    return set(benchmarks.get("reasoning_tasks", []))
+
+
+def get_categories(benchmarks: dict) -> dict:
+    """카테고리 목록 반환"""
+    return benchmarks.get("categories", {})
+
+
+def get_all_tasks(benchmarks: dict, category: str = None) -> list:
+    """카테고리별 또는 전체 태스크 목록 반환"""
+    categories = get_categories(benchmarks)
+
+    if category and category in categories:
+        return categories[category]
+
+    # 전체 태스크
+    tasks = []
+    for task_list in categories.values():
+        tasks.extend(task_list)
+    return tasks
+
+
 class Logger:
     """로그를 파일과 콘솔에 동시 출력"""
     def __init__(self, log_path: str):
@@ -57,7 +81,7 @@ def get_run_name(model_path: str) -> str:
     return f"{timestamp}_{model_name}"
 
 
-def run_benchmark(model_path: str, tasks: list[str]):
+def run_benchmark(model_path: str, tasks: list[str], use_reasoning: bool = False):
     """lm_eval로 벤치마크 실행 (시간 측정 포함)"""
 
     # 디렉토리 생성
@@ -65,7 +89,8 @@ def run_benchmark(model_path: str, tasks: list[str]):
     os.makedirs("results", exist_ok=True)
 
     # 실행 이름 및 파일 경로
-    run_name = get_run_name(model_path)
+    suffix = "_reasoning" if use_reasoning else ""
+    run_name = get_run_name(model_path) + suffix
     log_path = f"logs/{run_name}.log"
     result_path = f"results/{run_name}.json"
 
@@ -80,6 +105,7 @@ def run_benchmark(model_path: str, tasks: list[str]):
         print(f"Run Name: {run_name}")
         print(f"Model: {model_path}")
         print(f"Tasks: {tasks_str}")
+        print(f"Use Reasoning: {use_reasoning}")
         print(f"Log: {log_path}")
         print(f"Result: {result_path}")
         print(f"{'='*60}\n")
@@ -87,18 +113,24 @@ def run_benchmark(model_path: str, tasks: list[str]):
         # 전체 시간 측정 시작 (모델 로드 포함)
         total_start = time.time()
 
-        # 모델 로드
+        # 모델 로드 설정
+        model_kwargs = {
+            "pretrained": model_path,
+            "trust_remote_code": True,
+            "tensor_parallel_size": 1,
+            "gpu_memory_utilization": 0.85,
+            "max_model_len": 16384,
+            "batch_size": "auto",
+            "enforce_eager": True,  # torch.compile segfault 방지
+        }
+
+        # reasoning 모드면 think_end_token 추가
+        if use_reasoning:
+            model_kwargs["think_end_token"] = "</think>"
+
         print("Loading model...")
         load_start = time.time()
-        model = VLLM(
-            pretrained=model_path,
-            trust_remote_code=True,
-            tensor_parallel_size=1,
-            gpu_memory_utilization=0.85,
-            max_model_len=16384,
-            batch_size="auto",
-            enforce_eager=True,  # torch.compile segfault 방지
-        )
+        model = VLLM(**model_kwargs)
         load_time = time.time() - load_start
         print(f"Model loaded in {load_time:.2f}s\n")
 
@@ -109,7 +141,7 @@ def run_benchmark(model_path: str, tasks: list[str]):
 
         for task in tasks:
             print(f"\n{'='*60}")
-            print(f"Running task: {task}")
+            print(f"Running task: {task} (reasoning={use_reasoning})")
             print(f"{'='*60}")
 
             task_start = time.time()
@@ -172,6 +204,7 @@ def run_benchmark(model_path: str, tasks: list[str]):
             "run_name": run_name,
             "model_path": model_path,
             "tasks": tasks,
+            "use_reasoning": use_reasoning,
             "timestamp": datetime.now().isoformat(),
             "time": {
                 "model_load_seconds": load_time,
@@ -199,28 +232,66 @@ def main():
     parser = argparse.ArgumentParser(description="EXAONE Benchmark (평가 서버 동일 설정)")
     parser.add_argument("model_path", help="모델 경로 (예: /workspace/EXAONE-4.0-1.2B)")
     parser.add_argument("tasks", help="벤치마크 태스크 (카테고리명 또는 태스크명, 쉼표 구분)")
+    parser.add_argument("--reasoning", "-r", action="store_true",
+                        help="reasoning 모드 강제 활성화 (think_end_token 적용)")
+    parser.add_argument("--no-reasoning", "-nr", action="store_true",
+                        help="reasoning 모드 강제 비활성화")
 
     args = parser.parse_args()
 
     benchmarks = load_benchmarks()
+    reasoning_tasks = get_reasoning_tasks(benchmarks)
+
+    categories = get_categories(benchmarks)
 
     # 태스크 파싱
     if args.tasks == "all":
-        tasks = []
-        for task_list in benchmarks.values():
-            tasks.extend(task_list)
-    elif args.tasks in benchmarks:
-        tasks = benchmarks[args.tasks]
-    else:
-        tasks = args.tasks.split(",")
+        tasks = get_all_tasks(benchmarks)
+        # all인 경우 reasoning/non-reasoning 분리 실행
+        reasoning_list = [t for t in tasks if t in reasoning_tasks]
+        non_reasoning_list = [t for t in tasks if t not in reasoning_tasks]
 
-    run_benchmark(args.model_path, tasks)
+        if non_reasoning_list:
+            print(f"\n[Non-reasoning tasks: {', '.join(non_reasoning_list)}]")
+            run_benchmark(args.model_path, non_reasoning_list, use_reasoning=False)
+
+        if reasoning_list:
+            print(f"\n[Reasoning tasks: {', '.join(reasoning_list)}]")
+            run_benchmark(args.model_path, reasoning_list, use_reasoning=True)
+    else:
+        # 카테고리 또는 개별 태스크
+        if args.tasks in categories:
+            tasks = categories[args.tasks]
+            # 카테고리 내 태스크 중 reasoning 태스크가 있는지 확인
+            use_reasoning = any(t in reasoning_tasks for t in tasks)
+        else:
+            tasks = args.tasks.split(",")
+            # 개별 태스크는 reasoning_tasks에 있는지 확인
+            use_reasoning = any(t in reasoning_tasks for t in tasks)
+
+        # 명령줄 옵션으로 오버라이드
+        if args.reasoning:
+            use_reasoning = True
+        elif args.no_reasoning:
+            use_reasoning = False
+
+        run_benchmark(args.model_path, tasks, use_reasoning=use_reasoning)
 
 
 if __name__ == "__main__":
     benchmarks = load_benchmarks()
+    categories = get_categories(benchmarks)
+    reasoning_tasks = get_reasoning_tasks(benchmarks)
+
     print("Available categories:")
-    for cat, tasks in benchmarks.items():
-        print(f"  {cat}: {', '.join(tasks)}")
+    for cat, tasks in categories.items():
+        task_marks = []
+        for t in tasks:
+            mark = f"{t}*" if t in reasoning_tasks else t
+            task_marks.append(mark)
+        print(f"  {cat}: {', '.join(task_marks)}")
+
+    print("\n  (* = reasoning mode, think_end_token 적용)")
+    print(f"\nReasoning tasks: {', '.join(reasoning_tasks)}")
     print()
     main()
