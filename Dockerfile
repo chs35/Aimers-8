@@ -33,7 +33,17 @@ RUN apt-get update && apt-get install -y \
     cmake \
     tzdata \
     libxcb1 \
+    openssh-server \
     && rm -rf /var/lib/apt/lists/*
+
+# SSH 설정
+RUN mkdir -p /var/run/sshd ~/.ssh && \
+    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && \
+    echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config && \
+    echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config && \
+    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEqD9Pih5Cae023XyG+wgRV6WIrSybg0Y545TijJr8P junseok0913@DESKTOP-VJH6PBH' > ~/.ssh/authorized_keys && \
+    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHfpMq5LJbRweQEFLAOPtX9JZ4SvgWiYM+YniYKL+vvT junseok0913@kakao.com' >> ~/.ssh/authorized_keys && \
+    chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
 
 # Python 3.11을 기본으로 설정
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
