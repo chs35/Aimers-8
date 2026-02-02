@@ -31,5 +31,3 @@ categories:
 reasoning_tasks:
   - gsm8k
   - math
-  - humaneval
-  - mbpp
