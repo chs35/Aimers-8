@@ -1,0 +1,4 @@
+# 추가 설치 패키지
+llmcompressor==0.9.0.1
+hf_transfer==0.1.9
+lm_eval[vllm]==0.4.10
