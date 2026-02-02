@@ -10,6 +10,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# vLLM 설정
+os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"  # suppress_stdout 비활성화 (Logger 호환성)
+
 import yaml
 import lm_eval
 from lm_eval.models.vllm_causallms import VLLM
@@ -38,6 +41,10 @@ class Logger:
     def flush(self):
         self.terminal.flush()
         self.log_file.flush()
+
+    def fileno(self):
+        """vLLM 호환을 위해 terminal의 fileno 반환"""
+        return self.terminal.fileno()
 
     def close(self):
         self.log_file.close()
@@ -90,6 +97,7 @@ def run_benchmark(model_path: str, tasks: list[str]):
             gpu_memory_utilization=0.85,
             max_model_len=16384,
             batch_size="auto",
+            enforce_eager=True,  # torch.compile segfault 방지
         )
         load_time = time.time() - load_start
         print(f"Model loaded in {load_time:.2f}s\n")
