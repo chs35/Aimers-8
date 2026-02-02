@@ -1,0 +1,24 @@
+korean:
+  - klue_nli
+  - klue_sts
+  - kobest_hellaswag
+  - kobest_copa
+
+english:
+  - hellaswag
+  - arc_easy
+  - arc_challenge
+  - winogrande
+  - piqa
+
+math:
+  - gsm8k
+  - math
+
+reasoning:
+  - mmlu
+  - truthfulqa_mc2
+
+code:
+  - humaneval
+  - mbpp
