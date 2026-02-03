@@ -81,14 +81,18 @@ results/
 
 ### 로그 파일 내용
 
-각 샘플별 상세 정보가 기록됩니다:
+각 샘플별 상세 정보가 **로그 파일에만** 기록됩니다 (터미널 출력 없음):
 ```
 --- Sample 1 ---
 Question: Janet's ducks lay 16 eggs per day...
-Model Response: First, Janet's ducks lay 16 eggs...
-Extracted Answer: ['18']
+Model Response: Janet lays 16 eggs per day and eats 3...
+Extracted (strict): ['18']
+Extracted (flexible): ['18']
 Correct Answer: #### 18
 ```
+
+- `Extracted (strict)`: 엄격한 정답 매칭 필터 결과
+- `Extracted (flexible)`: 유연한 정답 추출 필터 결과
 
 ### JSON 결과 구조
 

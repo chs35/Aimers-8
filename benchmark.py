@@ -297,18 +297,23 @@ def run_benchmark(
         stdout_logger.log_only(f"{'='*60}")
 
         for task_name, samples in all_samples.items():
-            # doc_id로 중복 제거
-            unique_samples = {}
+            # doc_id별로 모든 샘플 그룹화 (strict/flexible 분리)
+            doc_samples_log = {}
             for sample in samples:
                 doc_id = sample.get("doc_id")
-                if doc_id not in unique_samples:
-                    unique_samples[doc_id] = sample
+                if doc_id is None:
+                    continue
+                if doc_id not in doc_samples_log:
+                    doc_samples_log[doc_id] = []
+                doc_samples_log[doc_id].append(sample)
 
             # 샘플 상세 정보는 로그 파일에만 기록 (터미널 출력 없음)
-            stdout_logger.log_only(f"\n[{task_name}] - {len(unique_samples)} samples (unique)")
+            stdout_logger.log_only(f"\n[{task_name}] - {len(doc_samples_log)} samples (unique)")
             stdout_logger.log_only("-" * 60)
 
-            for i, (doc_id, sample) in enumerate(unique_samples.items(), start=1):
+            for i, doc_id in enumerate(sorted(doc_samples_log.keys()), start=1):
+                samples_list = doc_samples_log[doc_id]
+                sample = samples_list[0]  # 첫 번째 샘플에서 기본 정보 추출
                 doc = sample.get("doc", {})
 
                 # 문제/질문 추출 (태스크마다 필드명이 다름)
@@ -321,8 +326,13 @@ def run_benchmark(
                 else:
                     model_response = "N/A"
 
-                # 추출된 답변
-                filtered = sample.get("filtered_resps", ["N/A"])
+                # strict/flexible 추출된 답변 분리
+                if len(samples_list) >= 2:
+                    strict_filtered = samples_list[0].get("filtered_resps", ["N/A"])
+                    flexible_filtered = samples_list[1].get("filtered_resps", ["N/A"])
+                else:
+                    strict_filtered = sample.get("filtered_resps", ["N/A"])
+                    flexible_filtered = strict_filtered
 
                 # 정답 추출 (태스크마다 필드명이 다름)
                 target = sample.get("target") or doc.get("answer") or doc.get("label") or "N/A"
@@ -330,7 +340,8 @@ def run_benchmark(
                 stdout_logger.log_only(f"\n--- Sample {i} ---")
                 stdout_logger.log_only(f"Question: {question}")
                 stdout_logger.log_only(f"Model Response: {model_response}")
-                stdout_logger.log_only(f"Extracted Answer: {filtered}")
+                stdout_logger.log_only(f"Extracted (strict): {strict_filtered}")
+                stdout_logger.log_only(f"Extracted (flexible): {flexible_filtered}")
                 stdout_logger.log_only(f"Correct Answer: {target}")
 
         # JSON 결과 저장
