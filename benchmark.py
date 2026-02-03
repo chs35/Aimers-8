@@ -77,6 +77,11 @@ class Logger:
         self.log_file.write(message)
         self.log_file.flush()
 
+    def log_only(self, message):
+        """로그 파일에만 기록 (터미널 출력 없음)"""
+        self.log_file.write(message + "\n")
+        self.log_file.flush()
+
     def flush(self):
         self.terminal.flush()
         self.log_file.flush()
@@ -286,10 +291,10 @@ def run_benchmark(
         print(f"  Overall time per token: {overall_time_per_token:.2f} ms/token")
         print(f"  Total time (with overhead): {total_time:.2f}s")
 
-        # 샘플별 상세 로그 출력 (doc_id로 중복 제거)
-        print(f"\n{'='*60}")
-        print("SAMPLE DETAILS")
-        print(f"{'='*60}")
+        # 샘플별 상세 로그 출력 (로그 파일에만 기록)
+        stdout_logger.log_only(f"\n{'='*60}")
+        stdout_logger.log_only("SAMPLE DETAILS")
+        stdout_logger.log_only(f"{'='*60}")
 
         for task_name, samples in all_samples.items():
             # doc_id로 중복 제거
@@ -299,8 +304,9 @@ def run_benchmark(
                 if doc_id not in unique_samples:
                     unique_samples[doc_id] = sample
 
-            print(f"\n[{task_name}] - {len(unique_samples)} samples (unique)")
-            print("-" * 60)
+            # 샘플 상세 정보는 로그 파일에만 기록 (터미널 출력 없음)
+            stdout_logger.log_only(f"\n[{task_name}] - {len(unique_samples)} samples (unique)")
+            stdout_logger.log_only("-" * 60)
 
             for i, (doc_id, sample) in enumerate(unique_samples.items(), start=1):
                 doc = sample.get("doc", {})
@@ -321,11 +327,11 @@ def run_benchmark(
                 # 정답 추출 (태스크마다 필드명이 다름)
                 target = sample.get("target") or doc.get("answer") or doc.get("label") or "N/A"
 
-                print(f"\n--- Sample {i} ---")
-                print(f"Question: {question}")
-                print(f"Model Response: {model_response}")
-                print(f"Extracted Answer: {filtered}")
-                print(f"Correct Answer: {target}")
+                stdout_logger.log_only(f"\n--- Sample {i} ---")
+                stdout_logger.log_only(f"Question: {question}")
+                stdout_logger.log_only(f"Model Response: {model_response}")
+                stdout_logger.log_only(f"Extracted Answer: {filtered}")
+                stdout_logger.log_only(f"Correct Answer: {target}")
 
         # JSON 결과 저장
         output_data = {
