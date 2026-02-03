@@ -1,55 +1,86 @@
+"""
+vLLM 직접 로딩 채팅
+serve.py 없이 바로 실행 가능
+"""
+import argparse
+
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 
-MODEL_PATH = "/workspace/EXAONE-4.0-1.2B"
 
-# 평가 서버와 동일한 설정
-print("Loading model (eval server config)...")
-llm = LLM(
-    model=MODEL_PATH,
-    trust_remote_code=True,
-    tensor_parallel_size=1,
-    gpu_memory_utilization=0.85,
-    enforce_eager=True,  # segfault 방지
-)
+def main():
+    parser = argparse.ArgumentParser(description="EXAONE Chat")
+    parser.add_argument("--model", "-m", required=True,
+                        help="모델 경로 (예: models/EXAONE-4.0-1.2B)")
+    args = parser.parse_args()
 
-tokenizer = AutoTokenizer.from_pretrained(
-    MODEL_PATH,
-    trust_remote_code=True,
-    local_files_only=True,
-)
-print("Model loaded!\n")
+    print("=" * 50)
+    print(f"Loading model: {args.model}")
+    print("=" * 50)
 
-sampling_params = SamplingParams(
-    temperature=0.7,
-    top_p=0.9,
-    max_tokens=16384,  # max_gen_toks = 16384
-)
+    # 토크나이저 로드
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        trust_remote_code=True,
+    )
 
-print("=" * 50)
-print("EXAONE-4.0-1.2B Chat (type 'quit' to exit)")
-print("=" * 50)
+    # vLLM 모델 로드 (대회 설정과 동일)
+    llm = LLM(
+        model=args.model,
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.85,
+        max_model_len=16384,
+        trust_remote_code=True,
+        enforce_eager=True,
+    )
 
-while True:
-    try:
-        user_input = input("\nYou: ").strip()
-        if user_input.lower() in ["quit", "exit", "q"]:
-            print("Bye!")
+    sampling_params = SamplingParams(
+        max_tokens=16384,
+        temperature=0.7,
+        top_p=0.9,
+    )
+
+    print("=" * 50)
+    print("EXAONE Chat")
+    print("Type 'quit' to exit, 'clear' to reset")
+    print("=" * 50)
+
+    messages = []
+
+    while True:
+        try:
+            user_input = input("\nYou: ").strip()
+            if user_input.lower() in ["quit", "exit", "q"]:
+                print("Bye!")
+                break
+            if user_input.lower() == "clear":
+                messages = []
+                print("Conversation cleared.")
+                continue
+            if not user_input:
+                continue
+
+            messages.append({"role": "user", "content": user_input})
+
+            # 채팅 템플릿 적용
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+            # 생성
+            outputs = llm.generate([prompt], sampling_params)
+            assistant_message = outputs[0].outputs[0].text
+
+            messages.append({"role": "assistant", "content": assistant_message})
+
+            print(f"AI: {assistant_message}")
+
+        except KeyboardInterrupt:
+            print("\nBye!")
             break
-        if not user_input:
-            continue
 
-        # apply_chat_template = true (평가 서버 설정)
-        messages = [{"role": "user", "content": user_input}]
-        prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
 
-        outputs = llm.generate([prompt], sampling_params)
-        response = outputs[0].outputs[0].text
-        print(f"AI: {response}")
-    except KeyboardInterrupt:
-        print("\nBye!")
-        break
+if __name__ == "__main__":
+    main()

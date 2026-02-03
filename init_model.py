@@ -7,7 +7,9 @@ from huggingface_hub import snapshot_download
 from vllm import LLM, SamplingParams
 
 MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
-LOCAL_DIR = "/workspace/EXAONE-4.0-1.2B"
+MODELS_DIR = "models"
+MODEL_NAME = MODEL_ID.split("/")[-1]
+LOCAL_DIR = os.path.join(MODELS_DIR, MODEL_NAME)
 
 # 1. 모델 다운로드
 if not os.path.exists(LOCAL_DIR):

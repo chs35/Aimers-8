@@ -1,5 +1,5 @@
 # 벤치마크 설정
-# use_reasoning: true면 think_end_token="</think>" 적용하여 reasoning trace strip
+# 대회 평가와 동일한 vLLM Serving 옵션 사용
 
 categories:
   korean:
@@ -26,8 +26,3 @@ categories:
   code:
     - humaneval
     - mbpp
-
-# 개별 태스크별 reasoning 설정
-reasoning_tasks:
-  - gsm8k
-  - math

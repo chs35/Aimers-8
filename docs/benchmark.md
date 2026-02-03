@@ -1,111 +1,84 @@
 # Benchmark 사용법
 
-EXAONE-4.0 모델 벤치마크 테스트 도구
+EXAONE-4.0 모델 벤치마크 테스트 도구 (대회 평가와 동일한 vLLM 설정)
 
-## 기본 사용법
-
-```bash
-python benchmark.py <모델경로> <태스크>
-```
-
-## 예시
-
-### 카테고리별 실행
+## 사용법
 
 ```bash
-# 수학 벤치마크 (reasoning 자동 적용)
-python benchmark.py /workspace/EXAONE-4.0-1.2B math
+# 카테고리별 실행
+python benchmark.py math --model models/EXAONE-4.0-1.2B
+python benchmark.py korean --model models/EXAONE-4.0-1.2B
+python benchmark.py all --model models/EXAONE-4.0-1.2B
 
-# 영어 벤치마크
-python benchmark.py /workspace/EXAONE-4.0-1.2B english
-
-# 한국어 벤치마크
-python benchmark.py /workspace/EXAONE-4.0-1.2B korean
-
-# 코드 벤치마크 (reasoning 자동 적용)
-python benchmark.py /workspace/EXAONE-4.0-1.2B code
+# 개별 태스크
+python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B
+python benchmark.py gsm8k,hellaswag,arc_easy --model models/EXAONE-4.0-1.2B
 ```
 
-### 개별 태스크 실행
+## 옵션
 
-```bash
-# 단일 태스크
-python benchmark.py /workspace/EXAONE-4.0-1.2B gsm8k
+| 옵션 | 단축 | 기본값 | 설명 |
+|-----|------|-------|------|
+| `--model` | `-m` | (필수) | 모델 경로 |
 
-# 여러 태스크 (쉼표 구분)
-python benchmark.py /workspace/EXAONE-4.0-1.2B gsm8k,hellaswag,arc_easy
+### enable_thinking 정보
+
+EXAONE-4.0은 reasoning 모드(`enable_thinking`)를 지원하지만, 현재 lm_eval의 vllm 모델은 `chat_template_kwargs`를 직접 지원하지 않습니다.
+
+**현재 동작**: EXAONE chat template의 기본값 `enable_thinking=False` 사용 (대회 설정과 동일)
+
+> 💡 MMLU, HellaSwag 등 log-likelihood 기반 평가 태스크는 텍스트 생성을 하지 않으므로 thinking 모드의 영향을 받지 않습니다.
+
+## vLLM 설정 (대회와 동일)
+
+대회 평가 서버와 동일한 vLLM Serving 옵션:
+
+```
+tensor_parallel_size = 1
+gpu_memory_utilization = 0.85
+batch_size = auto
+max_gen_toks = 16384
+apply_chat_template = true
 ```
 
-### 전체 벤치마크 실행
-
-```bash
-# reasoning/non-reasoning 자동 분리 실행
-python benchmark.py /workspace/EXAONE-4.0-1.2B all
+추가 로컬 테스트 설정 (대회 미명시):
+```
+max_model_len = 16384
+enforce_eager = true  # torch.compile segfault 방지
+trust_remote_code = true
 ```
 
-### Reasoning 모드 강제 설정
+## 카테고리 목록
 
-```bash
-# reasoning 강제 활성화
-python benchmark.py /workspace/EXAONE-4.0-1.2B hellaswag --reasoning
-python benchmark.py /workspace/EXAONE-4.0-1.2B hellaswag -r
+`config/benchmark.yaml`에서 설정:
 
-# reasoning 강제 비활성화
-python benchmark.py /workspace/EXAONE-4.0-1.2B gsm8k --no-reasoning
-python benchmark.py /workspace/EXAONE-4.0-1.2B gsm8k -nr
-```
-
-## 설정 파일
-
-`config/benchmark.yaml`에서 카테고리와 reasoning 태스크를 설정합니다.
-
-```yaml
-# 카테고리 정의
-categories:
-  korean:
-    - klue_nli
-    - klue_sts
-  math:
-    - gsm8k
-    - math
-  # ...
-
-# reasoning이 필요한 태스크 목록
-reasoning_tasks:
-  - gsm8k
-  - math
-  - humaneval
-  - mbpp
-```
-
-## Reasoning 모드란?
-
-EXAONE-4.0은 `<think>...</think>` 태그로 추론 과정을 출력합니다.
-
-- **Reasoning 모드 활성화**: `think_end_token="</think>"` 적용하여 추론 과정을 제거하고 최종 답만 추출
-- **Reasoning 모드 비활성화**: 출력 그대로 평가
-
-### Reasoning이 필요한 태스크
-
-| 태스크 | Reasoning | 이유 |
-|--------|-----------|------|
-| gsm8k, math | O | 수학 문제, CoT 추론 필요 |
-| humaneval, mbpp | O | 코드 생성, 추론 필요 |
-| mmlu, hellaswag | X | 객관식/단답형 |
-| arc, piqa, winogrande | X | 객관식/단답형 |
+| 카테고리 | 태스크 |
+|---------|--------|
+| korean | klue_nli, klue_sts, kobest_hellaswag, kobest_copa |
+| english | hellaswag, arc_easy, arc_challenge, winogrande, piqa |
+| math | gsm8k, math |
+| reasoning | mmlu, truthfulqa_mc2 |
+| code | humaneval, mbpp |
 
 ## 출력 파일
 
-실행 후 다음 파일이 생성됩니다:
-
 ```
 logs/
-  └── 20250203_120000_EXAONE-4.0-1.2B.log          # 실행 로그
-  └── 20250203_120000_EXAONE-4.0-1.2B_reasoning.log  # reasoning 모드 로그
+  └── 20250203_120000_EXAONE-4.0-1.2B.log    # 상세 로그 (모델 응답 포함)
 
 results/
-  └── 20250203_120000_EXAONE-4.0-1.2B.json          # 결과 JSON
-  └── 20250203_120000_EXAONE-4.0-1.2B_reasoning.json # reasoning 모드 결과
+  └── 20250203_120000_EXAONE-4.0-1.2B.json   # 결과 요약
+```
+
+### 로그 파일 내용
+
+각 샘플별 상세 정보가 기록됩니다:
+```
+--- Sample 1 ---
+Question: Janet's ducks lay 16 eggs per day...
+Model Response: First, Janet's ducks lay 16 eggs...
+Extracted Answer: ['18']
+Correct Answer: #### 18
 ```
 
 ### JSON 결과 구조
@@ -113,46 +86,68 @@ results/
 ```json
 {
   "run_name": "20250203_120000_EXAONE-4.0-1.2B",
-  "model_path": "/workspace/EXAONE-4.0-1.2B",
+  "model_path": "models/EXAONE-4.0-1.2B",
   "tasks": ["gsm8k"],
-  "use_reasoning": true,
+  "enable_thinking": false,
+  "vllm_settings": {
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.85,
+    "max_gen_toks": 16384,
+    "trust_remote_code": true,
+    "max_model_len": 16384,
+    "enforce_eager": true
+  },
   "timestamp": "2025-02-03T12:00:00",
   "time": {
-    "model_load_seconds": 12.34,
-    "per_task_seconds": {"gsm8k": 294.88},
-    "total_benchmark_seconds": 294.88,
-    "total_seconds": 307.22
+    "total_seconds": 620.0,
+    "total_inference_seconds": 580.0,
+    "total_output_tokens": 125000,
+    "overall_ms_per_token": 4.64,
+    "per_task": {
+      "gsm8k": {
+        "seconds": 580.0,
+        "output_tokens": 125000,
+        "ms_per_token": 4.64
+      }
+    }
   },
   "results": {
     "gsm8k": {
-      "exact_match,strict-match": 0.65,
-      "exact_match,flexible-extract": 0.68
+      "enable_thinking": false,
+      "metrics": {
+        "exact_match,strict-match": 0.65,
+        "exact_match,strict-match_stderr": 0.012,
+        "exact_match,flexible-extract": 0.68,
+        "exact_match,flexible-extract_stderr": 0.011
+      },
+      "num_samples": 1319,
+      "correct": [1, 2, 5, 7, 10, 15, ...],
+      "incorrect": [3, 4, 6, 8, 9, ...]
     }
   }
 }
 ```
 
-## 평가 서버 설정
-
-평가 서버와 동일한 vLLM 설정을 사용합니다:
-
-```python
-tensor_parallel_size = 1
-gpu_memory_utilization = 0.85
-max_model_len = 16384
-batch_size = "auto"
-apply_chat_template = True
-```
+- `enable_thinking`: thinking 모드 활성화 여부 (전체 및 태스크별)
+- `num_samples`: 실제 평가 샘플 수 (중복 제거)
+- `correct`: 정답을 맞춘 샘플 번호 목록 (1부터 시작)
+- `incorrect`: 오답인 샘플 번호 목록 (1부터 시작)
+- `ms_per_token`: 토큰당 추론 시간 (대회 점수 산정에 사용)
 
 ## 문제 해결
 
 ### Segfault 발생 시
 
 L4 GPU에서 torch.compile 관련 segfault가 발생할 수 있습니다.
-코드에 `enforce_eager=True`가 설정되어 있어 자동으로 우회됩니다.
+`enforce_eager=True` 설정이 기본으로 적용되어 자동으로 우회됩니다.
 
-### 낮은 점수가 나올 때
+## 대화 모드 (init_chat.py)
 
-1. Reasoning 모드가 올바르게 설정되었는지 확인
-2. `--reasoning` 또는 `--no-reasoning` 옵션으로 테스트
-3. `config/benchmark.yaml`의 `reasoning_tasks` 확인
+벤치마크가 아닌 대화용:
+
+```bash
+python init_chat.py --model models/EXAONE-4.0-1.2B
+```
+
+- `quit` / `q` - 종료
+- `clear` - 대화 초기화
