@@ -1,2 +1,9 @@
 models/*/
 .claude
+EXAONE-4.0-1.2B-Pruned-SparseGPT
+
+EXAONE-4.0-1.2B-SparseGPT
+
+EXAONE-4.0-1.2B-GPTQ-RECIPE1
+
+EXAONE-4.0-1.2B-SparseGPT-v2
