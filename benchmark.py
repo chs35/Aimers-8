@@ -125,6 +125,39 @@ def count_tokens(tokenizer, text: str) -> int:
         return 0
 
 
+def parse_vllm_info(log_path: str) -> dict:
+    """로그 파일에서 vLLM 설정 정보 파싱"""
+    vllm_info = {
+        "max_num_batched_tokens": None,
+        "gpu_kv_cache_tokens": None,
+        "max_concurrency": None,
+    }
+
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # max_num_batched_tokens 파싱
+        match = re.search(r"max_num_batched_tokens=(\d+)", content)
+        if match:
+            vllm_info["max_num_batched_tokens"] = int(match.group(1))
+
+        # GPU KV cache size 파싱
+        match = re.search(r"GPU KV cache size: ([\d,]+) tokens", content)
+        if match:
+            vllm_info["gpu_kv_cache_tokens"] = int(match.group(1).replace(",", ""))
+
+        # Maximum concurrency 파싱
+        match = re.search(r"Maximum concurrency for [\d,]+ tokens per request: ([\d.]+)x", content)
+        if match:
+            vllm_info["max_concurrency"] = float(match.group(1))
+
+    except Exception:
+        pass
+
+    return vllm_info
+
+
 def run_benchmark(
     model_path: str,
     tasks: list[str],
@@ -178,7 +211,7 @@ def run_benchmark(
         task_times = {}
         task_tokens = {}
         task_time_per_token = {}
-        task_configs = {}  # 태스크별 lm_eval 설정 (batch_size 등)
+        vllm_info = {}  # vLLM 내부 설정 (KV cache 등)
 
         for task_idx, task in enumerate(tasks):
             print(f"\n{'='*60}")
@@ -200,25 +233,20 @@ def run_benchmark(
 
             task_time = time.time() - task_start
 
-            # 첫 번째 태스크에서 모델 로드 시간 계산
+            # 첫 번째 태스크 완료 후 vLLM 정보 파싱 (모델 로드 시 설정된 값)
             if task_idx == 0:
-                model_load_time = task_time * 0.1  # 대략적인 추정 (실제로는 lm_eval 내부에서 측정 필요)
+                vllm_info = parse_vllm_info(log_path)
+                if vllm_info.get("max_num_batched_tokens"):
+                    print(f"\n[vLLM Info]")
+                    print(f"  max_num_batched_tokens: {vllm_info['max_num_batched_tokens']}")
+                    print(f"  gpu_kv_cache_tokens: {vllm_info['gpu_kv_cache_tokens']}")
+                    print(f"  max_concurrency: {vllm_info['max_concurrency']}x")
 
             # 결과 수집
             if task in results.get("results", {}):
                 all_results[task] = results["results"][task]
             if task in results.get("samples", {}):
                 all_samples[task] = results["samples"][task]
-
-            # 태스크별 lm_eval config 수집 (batch_size 등)
-            if "config" in results:
-                task_config = results["config"]
-                task_configs[task] = {
-                    "batch_size": task_config.get("batch_size", "N/A"),
-                    "model": task_config.get("model", "N/A"),
-                }
-                print(f"\n[lm_eval config for {task}]")
-                print(f"  batch_size: {task_config.get('batch_size', 'N/A')}")
 
             # 출력 토큰 수 계산 (doc_id로 중복 제거)
             # lm_eval은 여러 메트릭(strict-match, flexible-extract 등)에 대해
@@ -351,6 +379,7 @@ def run_benchmark(
             "tasks": tasks,
             "enable_thinking": enable_thinking,
             "vllm_settings": VLLM_SETTINGS,
+            "vllm_info": vllm_info,  # KV cache, max_num_batched_tokens 등
             "model_args": model_args,
             "timestamp": datetime.now().isoformat(),
             "time": {
@@ -363,7 +392,6 @@ def run_benchmark(
                         "seconds": task_times.get(task, 0),
                         "output_tokens": task_tokens.get(task, 0),
                         "ms_per_token": task_time_per_token.get(task, 0),
-                        "batch_size": task_configs.get(task, {}).get("batch_size", "N/A"),
                     }
                     for task in tasks
                 },
