@@ -18,6 +18,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# NOTE: vLLM(0.14.1) + torch(2.9.x) 환경에서 torchdynamo/torch.compile 경로가
+# logprobs(=multiple_choice/loglikelihood) 요청 시 segfault를 유발하는 사례가 있습니다.
+# 로컬 벤치마크가 죽지 않도록 기본적으로 torchdynamo를 비활성화합니다.
+# (필요 시 실행 전에 `TORCHDYNAMO_DISABLE=0`으로 override 가능)
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+
 import yaml
 import lm_eval
 from transformers import AutoTokenizer
@@ -33,7 +39,7 @@ VLLM_SETTINGS = {
     "max_gen_toks": 16384,
     "trust_remote_code": True,
     # 추가 설정 (대회 미명시, 로컬 테스트용)
-    "enforce_eager": True,  # torch.compile segfault 방지
+    "enforce_eager": False,  # torch.compile segfault 방지
 }
 
 
@@ -487,7 +493,23 @@ def main():
                         help="모델 경로 (예: models/EXAONE-4.0-1.2B)")
     parser.add_argument("--thinking", "-t", action="store_true", default=False,
                         help="enable_thinking 활성화 (기본값: False, 대회 설정과 동일)")
+    parser.add_argument(
+        "--enforce-eager",
+        dest="enforce_eager",
+        action="store_true",
+        help="vLLM enforce_eager=True (CUDA graph/compile 비활성화, 안정성 우선)",
+    )
+    parser.add_argument(
+        "--no-enforce-eager",
+        dest="enforce_eager",
+        action="store_false",
+        help="vLLM enforce_eager=False (대회 기본 설정에 더 근접, compile/cudagraph 사용)",
+    )
+    parser.set_defaults(enforce_eager=VLLM_SETTINGS["enforce_eager"])
     args = parser.parse_args()
+
+    # CLI 옵션으로 vLLM 설정 override
+    VLLM_SETTINGS["enforce_eager"] = bool(args.enforce_eager)
 
     benchmarks = load_benchmarks()
     categories = get_categories(benchmarks)

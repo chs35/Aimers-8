@@ -53,9 +53,17 @@ apply_chat_template = true
 
 추가 로컬 테스트 설정 (대회 미명시):
 ```
-enforce_eager = true  # torch.compile segfault 방지
+enforce_eager = true  # CUDA graph/compile 비활성화 (안정성 우선)
 trust_remote_code = true
 ```
+
+추가 환경 변수 (로컬 권장):
+```
+TORCHDYNAMO_DISABLE=1  # torchdynamo/torch.compile 경로 segfault 우회 (특히 logprobs/다지선다 태스크)
+```
+
+`benchmark.py`는 기본적으로 `TORCHDYNAMO_DISABLE=1`을 설정합니다. (필요 시 실행 전에 `TORCHDYNAMO_DISABLE=0`으로 override)
+`enforce_eager`는 `--enforce-eager` / `--no-enforce-eager` 옵션으로 변경할 수 있습니다.
 
 ## 카테고리 목록
 
@@ -164,8 +172,17 @@ Correct Answer: #### 18
 
 ### Segfault 발생 시
 
-L4 GPU에서 torch.compile 관련 segfault가 발생할 수 있습니다.
-`enforce_eager=True` 설정이 기본으로 적용되어 자동으로 우회됩니다.
+vLLM(0.14.1) + torch(2.9.x) 조합에서 torchdynamo/torch.compile 경로가 segfault를 유발할 수 있습니다.
+
+- 다지선다/로그우도 기반 태스크(tinyMMLU/mmlu 등)는 `logprobs`를 사용하므로 영향을 크게 받습니다.
+- 로컬에서는 `TORCHDYNAMO_DISABLE=1`로 우회하는 것을 권장합니다. (`benchmark.py` 기본값)
+- 추가로 안정성이 필요하면 `--enforce-eager`를 사용하세요. (속도는 느려질 수 있음)
+
+### tinyMMLU 빠른 테스트 주의
+
+`tinyMMLU`는 tinyBenchmarks의 IRT 기반 aggregate(`acc_norm`)를 사용합니다.
+`lm_eval.simple_evaluate(..., limit=1)`처럼 `limit`을 아주 작게 주면 aggregation 단계에서 `IndexError`가 날 수 있습니다.
+이 경우 `limit` 없이 실행하거나, smoke test는 `vllm`의 `logprobs` 동작 여부만 별도로 확인하세요.
 
 ## 대화 모드 (init_chat.py)
 

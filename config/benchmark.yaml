@@ -21,7 +21,10 @@ categories:
 
   reasoning:
     - mmlu
+    - tinyMMLU
     - truthfulqa_mc2
+
+# pip install git+https://github.com/felipemaiapolo/tinyBenchmarks
 
   code:
     - humaneval
