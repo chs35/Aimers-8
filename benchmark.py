@@ -12,6 +12,7 @@ lm_eval의 vllm 모델 타입 사용
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -343,34 +344,73 @@ def run_benchmark(
         }
 
         for task_name, task_result in all_results.items():
-            # doc_id로 중복 제거 후 정답/오답 번호 그룹화 (1부터 시작, 로그와 일치)
+            # doc_id별로 샘플 그룹화 (strict-match, flexible-extract 분리)
             samples = all_samples.get(task_name, [])
-            unique_samples = {}
+            doc_samples = {}
             for sample in samples:
                 doc_id = sample.get("doc_id")
-                if doc_id not in unique_samples:
-                    unique_samples[doc_id] = sample
+                if doc_id is None:
+                    continue
+                if doc_id not in doc_samples:
+                    doc_samples[doc_id] = []
+                doc_samples[doc_id].append(sample)
 
-            correct_ids = []
-            incorrect_ids = []
-            for i, (doc_id, sample) in enumerate(unique_samples.items(), start=1):
-                # 정답 여부 확인 (exact_match 또는 acc 메트릭 기준)
-                is_correct = sample.get("exact_match") or sample.get("acc") or False
-                if is_correct:
-                    correct_ids.append(i)
+            # strict-match, flexible-extract 각각 정답/오답 추적
+            strict_correct = []
+            strict_incorrect = []
+            flexible_correct = []
+            flexible_incorrect = []
+
+            sorted_doc_ids = sorted(doc_samples.keys())
+            for i, doc_id in enumerate(sorted_doc_ids, start=1):
+                samples_list = doc_samples[doc_id]
+
+                if len(samples_list) >= 2:
+                    # gsm8k 등: 첫 번째가 strict-match, 두 번째가 flexible-extract
+                    strict_result = bool(samples_list[0].get("exact_match") or samples_list[0].get("acc"))
+                    flexible_result = bool(samples_list[1].get("exact_match") or samples_list[1].get("acc"))
                 else:
-                    incorrect_ids.append(i)
+                    # 단일 메트릭 태스크 (hellaswag, mmlu 등)
+                    result = bool(samples_list[0].get("exact_match") or samples_list[0].get("acc"))
+                    strict_result = result
+                    flexible_result = result
+
+                if strict_result:
+                    strict_correct.append(i)
+                else:
+                    strict_incorrect.append(i)
+
+                if flexible_result:
+                    flexible_correct.append(i)
+                else:
+                    flexible_incorrect.append(i)
 
             output_data["results"][task_name] = {
                 "enable_thinking": enable_thinking,
                 "metrics": task_result,
-                "num_samples": len(unique_samples),
-                "correct": correct_ids,
-                "incorrect": incorrect_ids,
+                "num_samples": len(doc_samples),
+                "strict_match": {
+                    "correct": strict_correct,
+                    "incorrect": strict_incorrect,
+                },
+                "flexible_extract": {
+                    "correct": flexible_correct,
+                    "incorrect": flexible_incorrect,
+                },
             }
 
+        # JSON 저장 (correct/incorrect 배열은 한 줄로 압축)
+        json_str = json.dumps(output_data, indent=2, ensure_ascii=False)
+
+        def compact_int_array(match):
+            """숫자 배열을 한 줄로 압축"""
+            return re.sub(r'\s+', ' ', match.group(0))
+
+        json_str = re.sub(r'"correct": \[\s*[\d,\s]*\]', compact_int_array, json_str)
+        json_str = re.sub(r'"incorrect": \[\s*[\d,\s]*\]', compact_int_array, json_str)
+
         with open(result_path, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
+            f.write(json_str)
 
         print(f"\n{'='*60}")
         print(f"Log saved: {log_path}")

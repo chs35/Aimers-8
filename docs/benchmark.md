@@ -20,14 +20,24 @@ python benchmark.py gsm8k,hellaswag,arc_easy --model models/EXAONE-4.0-1.2B
 | 옵션 | 단축 | 기본값 | 설명 |
 |-----|------|-------|------|
 | `--model` | `-m` | (필수) | 모델 경로 |
+| `--thinking` | `-t` | False | enable_thinking 활성화 |
 
-### enable_thinking 정보
+### enable_thinking 옵션
 
-EXAONE-4.0은 reasoning 모드(`enable_thinking`)를 지원하지만, 현재 lm_eval의 vllm 모델은 `chat_template_kwargs`를 직접 지원하지 않습니다.
+EXAONE-4.0은 reasoning 모드(`enable_thinking`)를 지원합니다.
 
-**현재 동작**: EXAONE chat template의 기본값 `enable_thinking=False` 사용 (대회 설정과 동일)
+```bash
+# thinking 비활성화 (기본값, 대회 설정과 동일)
+python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B
 
-> 💡 MMLU, HellaSwag 등 log-likelihood 기반 평가 태스크는 텍스트 생성을 하지 않으므로 thinking 모드의 영향을 받지 않습니다.
+# thinking 활성화
+python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B --thinking
+```
+
+- `enable_thinking=False` (기본값): 모델이 `<think>` 블록 없이 바로 답변 출력
+- `enable_thinking=True`: 모델이 `<think>...</think>` 블록으로 추론 과정 출력 후 답변
+
+> 대회 평가 서버는 enable_thinking을 명시하지 않으므로 기본값(False)이 적용됩니다.
 
 ## vLLM 설정 (대회와 동일)
 
@@ -121,8 +131,14 @@ Correct Answer: #### 18
         "exact_match,flexible-extract_stderr": 0.011
       },
       "num_samples": 1319,
-      "correct": [1, 2, 5, 7, 10, 15, ...],
-      "incorrect": [3, 4, 6, 8, 9, ...]
+      "strict_match": {
+        "correct": [2, 3, 6, 7, ...],
+        "incorrect": [1, 4, 5, 8, ...]
+      },
+      "flexible_extract": {
+        "correct": [1, 2, 3, 6, 7, ...],
+        "incorrect": [4, 5, 8, ...]
+      }
     }
   }
 }
@@ -130,8 +146,12 @@ Correct Answer: #### 18
 
 - `enable_thinking`: thinking 모드 활성화 여부 (전체 및 태스크별)
 - `num_samples`: 실제 평가 샘플 수 (중복 제거)
-- `correct`: 정답을 맞춘 샘플 번호 목록 (1부터 시작)
-- `incorrect`: 오답인 샘플 번호 목록 (1부터 시작)
+- `strict_match`: 엄격한 정답 매칭 결과
+  - `correct`: 정답 샘플 번호 목록 (1부터 시작)
+  - `incorrect`: 오답 샘플 번호 목록
+- `flexible_extract`: 유연한 정답 추출 결과
+  - `correct`: 정답 샘플 번호 목록 (1부터 시작)
+  - `incorrect`: 오답 샘플 번호 목록
 - `ms_per_token`: 토큰당 추론 시간 (대회 점수 산정에 사용)
 
 ## 문제 해결
