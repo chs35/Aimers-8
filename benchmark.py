@@ -173,6 +173,7 @@ def run_benchmark(
         task_times = {}
         task_tokens = {}
         task_time_per_token = {}
+        task_configs = {}  # 태스크별 lm_eval 설정 (batch_size 등)
 
         for task_idx, task in enumerate(tasks):
             print(f"\n{'='*60}")
@@ -203,6 +204,16 @@ def run_benchmark(
                 all_results[task] = results["results"][task]
             if task in results.get("samples", {}):
                 all_samples[task] = results["samples"][task]
+
+            # 태스크별 lm_eval config 수집 (batch_size 등)
+            if "config" in results:
+                task_config = results["config"]
+                task_configs[task] = {
+                    "batch_size": task_config.get("batch_size", "N/A"),
+                    "model": task_config.get("model", "N/A"),
+                }
+                print(f"\n[lm_eval config for {task}]")
+                print(f"  batch_size: {task_config.get('batch_size', 'N/A')}")
 
             # 출력 토큰 수 계산 (doc_id로 중복 제거)
             # lm_eval은 여러 메트릭(strict-match, flexible-extract 등)에 대해
@@ -323,6 +334,7 @@ def run_benchmark(
             "tasks": tasks,
             "enable_thinking": enable_thinking,
             "vllm_settings": VLLM_SETTINGS,
+            "model_args": model_args,
             "timestamp": datetime.now().isoformat(),
             "time": {
                 "total_seconds": total_time,
@@ -334,6 +346,7 @@ def run_benchmark(
                         "seconds": task_times.get(task, 0),
                         "output_tokens": task_tokens.get(task, 0),
                         "ms_per_token": task_time_per_token.get(task, 0),
+                        "batch_size": task_configs.get(task, {}).get("batch_size", "N/A"),
                     }
                     for task in tasks
                 },

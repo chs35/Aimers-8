@@ -105,6 +105,7 @@ Correct Answer: #### 18
     "trust_remote_code": true,
     "enforce_eager": true
   },
+  "model_args": "pretrained=models/EXAONE-4.0-1.2B,...",
   "timestamp": "2025-02-03T12:00:00",
   "time": {
     "total_seconds": 620.0,
@@ -115,7 +116,8 @@ Correct Answer: #### 18
       "gsm8k": {
         "seconds": 580.0,
         "output_tokens": 125000,
-        "ms_per_token": 4.64
+        "ms_per_token": 4.64,
+        "batch_size": "auto"
       }
     }
   },
@@ -143,6 +145,8 @@ Correct Answer: #### 18
 ```
 
 - `enable_thinking`: thinking 모드 활성화 여부 (전체 및 태스크별)
+- `model_args`: vLLM에 전달된 전체 모델 인자
+- `batch_size`: 태스크별 배치 크기 (auto면 동적 결정)
 - `num_samples`: 실제 평가 샘플 수 (중복 제거)
 - `strict_match`: 엄격한 정답 매칭 결과
   - `correct`: 정답 샘플 번호 목록 (1부터 시작)
