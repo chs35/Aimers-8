@@ -53,7 +53,6 @@ apply_chat_template = true
 
 추가 로컬 테스트 설정 (대회 미명시):
 ```
-max_model_len = 16384
 enforce_eager = true  # torch.compile segfault 방지
 trust_remote_code = true
 ```
@@ -104,7 +103,6 @@ Correct Answer: #### 18
     "gpu_memory_utilization": 0.85,
     "max_gen_toks": 16384,
     "trust_remote_code": true,
-    "max_model_len": 16384,
     "enforce_eager": true
   },
   "timestamp": "2025-02-03T12:00:00",

@@ -33,7 +33,6 @@ VLLM_SETTINGS = {
     "max_gen_toks": 16384,
     "trust_remote_code": True,
     # 추가 설정 (대회 미명시, 로컬 테스트용)
-    "max_model_len": 16384,
     "enforce_eager": True,  # torch.compile segfault 방지
 }
 
@@ -104,7 +103,6 @@ def build_model_args(model_path: str, enable_thinking: bool = False) -> str:
         f"gpu_memory_utilization={VLLM_SETTINGS['gpu_memory_utilization']}",
         f"max_gen_toks={VLLM_SETTINGS['max_gen_toks']}",
         f"trust_remote_code={str(VLLM_SETTINGS['trust_remote_code']).lower()}",
-        f"max_model_len={VLLM_SETTINGS['max_model_len']}",
         f"enforce_eager={str(VLLM_SETTINGS['enforce_eager']).lower()}",
         # enable_thinking: chat template에 전달 (False면 thinking 비활성화)
         f"enable_thinking={str(enable_thinking).lower()}",
