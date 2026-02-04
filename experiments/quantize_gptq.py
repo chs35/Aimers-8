@@ -65,7 +65,15 @@ def prepare_calibration_data(
     print("Tokenizing calibration data...")
     tokenized_data = []
     for sample in dataset:
-        text = sample.get("text", sample.get("content", ""))
+        # MANTA-1M 데이터셋: conversations 컬럼에서 텍스트 추출
+        conversations = sample.get("conversations", [])
+        if conversations:
+            # 모든 대화 내용을 하나의 텍스트로 합침
+            text = "\n".join([turn.get("content", "") for turn in conversations])
+        else:
+            # 다른 형식의 데이터셋 대비
+            text = sample.get("text", sample.get("content", ""))
+
         if not text:
             continue
 

@@ -63,12 +63,21 @@ def prepare_calibration_dataset(
 
     print(f"Selected {len(dataset)} samples for calibration")
 
-    # 텍스트 추출
+    # 텍스트 추출 (MANTA-1M은 conversations 형식)
     texts = []
     for sample in dataset:
-        text = sample.get("text", sample.get("content", ""))
-        if text:
-            texts.append(text)
+        # MANTA-1M 데이터셋: conversations 컬럼에서 텍스트 추출
+        conversations = sample.get("conversations", [])
+        if conversations:
+            # 모든 대화 내용을 하나의 텍스트로 합침
+            text = "\n".join([turn.get("content", "") for turn in conversations])
+            if text:
+                texts.append(text)
+        else:
+            # 다른 형식의 데이터셋 대비
+            text = sample.get("text", sample.get("content", ""))
+            if text:
+                texts.append(text)
 
     # HuggingFace Dataset 형식으로 변환
     ds = Dataset.from_dict({"text": texts})
