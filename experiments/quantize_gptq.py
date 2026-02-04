@@ -83,7 +83,8 @@ def prepare_calibration_data(
             max_length=max_length,
             return_tensors="pt",
         )
-        tokenized_data.append(tokens)
+        # GPTQModel은 input_ids 텐서만 필요
+        tokenized_data.append(tokens.input_ids)
 
     print(f"Total calibration samples: {len(tokenized_data)}")
     return tokenized_data
