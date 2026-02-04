@@ -200,7 +200,7 @@ def main():
     parser.add_argument(
         "--output-path",
         type=str,
-        default="models/EXAONE-4.0-1.2B-gptq-4bit-g128-sym",
+        default="models/EXAONE-4.0-1.2B-gptq-4bit-g128-sym-gptqmodel",
         help="양자화된 모델 저장 경로",
     )
     parser.add_argument(
