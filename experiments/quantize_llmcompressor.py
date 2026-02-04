@@ -10,6 +10,8 @@ vLLM과의 호환성이 보장되어 더 안정적입니다.
 - sym: True (대칭 양자화)
 - desc_act: False (LLM Compressor에서는 기본값)
 - quant_method: "gptq"
+
+캘리브레이션 데이터: LGAI-EXAONE/MANTA-1M (EXAONE 공식 데이터셋)
 """
 
 import os
@@ -18,7 +20,7 @@ import random
 from pathlib import Path
 
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # LLM Compressor 임포트
@@ -34,94 +36,42 @@ except ImportError:
 
 def prepare_calibration_dataset(
     tokenizer,
-    num_samples: int = 512,
+    num_samples: int = 1024,
     max_length: int = 2048,
     seed: int = 42,
 ):
     """
-    캘리브레이션 데이터셋 준비 (LLM Compressor 형식)
+    MANTA-1M 데이터셋으로 캘리브레이션 데이터셋 준비 (LLM Compressor 형식)
 
-    LLM Compressor는 HuggingFace datasets 객체를 직접 받습니다.
+    LGAI-EXAONE/MANTA-1M: EXAONE 모델 공식 캘리브레이션 데이터셋
+    - 한국어/영어 혼합
+    - 다양한 도메인 포함
     """
     random.seed(seed)
 
-    all_texts = []
+    print(f"Loading calibration data from LGAI-EXAONE/MANTA-1M...")
+    dataset = load_dataset(
+        "LGAI-EXAONE/MANTA-1M",
+        split="train",
+        trust_remote_code=True,
+    )
 
-    # 1. 영어 데이터: UltraChat (LLM Compressor 권장 데이터셋)
-    print("Loading English calibration data (ultrachat)...")
-    try:
-        en_dataset = load_dataset(
-            "HuggingFaceH4/ultrachat_200k",
-            split=f"train_sft[:{num_samples // 2}]",
-        )
-        for sample in en_dataset:
-            text = tokenizer.apply_chat_template(
-                sample["messages"],
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            all_texts.append(text)
-        print(f"  Loaded {len(all_texts)} English samples")
-    except Exception as e:
-        print(f"  Warning: Failed to load ultrachat: {e}")
-        # 대체: C4 데이터셋
-        try:
-            c4 = load_dataset("allenai/c4", "en", split="train", streaming=True)
-            count = 0
-            for sample in c4:
-                if count >= num_samples // 2:
-                    break
-                if len(sample["text"]) > 100:
-                    all_texts.append(sample["text"])
-                    count += 1
-            print(f"  Loaded {count} English samples from C4")
-        except Exception as e2:
-            print(f"  Warning: Failed to load C4: {e2}")
+    # 샘플 선택
+    if len(dataset) > num_samples:
+        indices = random.sample(range(len(dataset)), num_samples)
+        dataset = dataset.select(indices)
 
-    # 2. 한국어 데이터
-    print("Loading Korean calibration data...")
-    try:
-        ko_dataset = load_dataset(
-            "wikimedia/wikipedia",
-            "20231101.ko",
-            split="train",
-            streaming=True,
-        )
-        count = 0
-        for sample in ko_dataset:
-            if count >= num_samples // 4:
-                break
-            if len(sample["text"]) > 100:
-                all_texts.append(sample["text"])
-                count += 1
-        print(f"  Loaded {count} Korean samples")
-    except Exception as e:
-        print(f"  Warning: Failed to load Korean data: {e}")
+    print(f"Selected {len(dataset)} samples for calibration")
 
-    # 3. 수학 데이터: GSM8K
-    print("Loading math calibration data (GSM8K)...")
-    try:
-        gsm8k = load_dataset("openai/gsm8k", "main", split="train")
-        indices = random.sample(
-            range(len(gsm8k)), min(num_samples // 4, len(gsm8k))
-        )
-        for idx in indices:
-            sample = gsm8k[idx]
-            text = f"Question: {sample['question']}\nAnswer: {sample['answer']}"
-            all_texts.append(text)
-        print(f"  Loaded {len(indices)} math samples")
-    except Exception as e:
-        print(f"  Warning: Failed to load GSM8K: {e}")
-
-    # 셔플 및 최종 샘플 수 조정
-    random.shuffle(all_texts)
-    all_texts = all_texts[:num_samples]
-    print(f"Total calibration samples: {len(all_texts)}")
+    # 텍스트 추출
+    texts = []
+    for sample in dataset:
+        text = sample.get("text", sample.get("content", ""))
+        if text:
+            texts.append(text)
 
     # HuggingFace Dataset 형식으로 변환
-    from datasets import Dataset
-
-    ds = Dataset.from_dict({"text": all_texts})
+    ds = Dataset.from_dict({"text": texts})
 
     # 토크나이즈
     def tokenize(sample):
@@ -135,13 +85,14 @@ def prepare_calibration_dataset(
 
     ds = ds.map(tokenize, remove_columns=ds.column_names)
 
+    print(f"Total calibration samples: {len(ds)}")
     return ds
 
 
 def quantize_model(
     model_path: str,
     output_path: str,
-    num_samples: int = 512,
+    num_samples: int = 1024,
     max_length: int = 2048,
     seed: int = 42,
     use_custom_config: bool = False,
@@ -271,8 +222,8 @@ def main():
     parser.add_argument(
         "--num-samples",
         type=int,
-        default=512,
-        help="캘리브레이션 샘플 수 (권장: 512)",
+        default=1024,
+        help="캘리브레이션 샘플 수 (권장: 512~2048)",
     )
     parser.add_argument(
         "--max-length",

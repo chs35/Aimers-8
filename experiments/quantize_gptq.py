@@ -8,6 +8,8 @@ EXAONE-4.0-1.2B GPTQ 4bit 양자화 스크립트
 - desc_act: False
 - quant_method: "gptq"
 
+캘리브레이션 데이터: LGAI-EXAONE/MANTA-1M (EXAONE 공식 데이터셋)
+
 이 설정으로 vLLM이 자동으로 gptq_marlin 커널을 사용하도록 유도합니다.
 """
 
@@ -26,7 +28,7 @@ try:
 except ImportError:
     raise ImportError(
         "GPTQModel이 설치되지 않았습니다. "
-        "다음 명령어로 설치하세요: pip install gptqmodel"
+        "다음 명령어로 설치하세요: pip install gptqmodel --no-build-isolation"
     )
 
 
@@ -37,88 +39,36 @@ def prepare_calibration_data(
     seed: int = 42,
 ):
     """
-    캘리브레이션 데이터 준비
+    MANTA-1M 데이터셋으로 캘리브레이션 데이터 준비
 
-    계획서 권장사항:
-    - 512~2k 샘플
-    - 한국어/영어 혼합 + 평가 도메인(수학/추론/지시문 등) 비중 반영
-    - 입력 길이도 짧은/긴 케이스 섞기
+    LGAI-EXAONE/MANTA-1M: EXAONE 모델 공식 캘리브레이션 데이터셋
+    - 한국어/영어 혼합
+    - 다양한 도메인 포함
     """
     random.seed(seed)
-    calibration_data = []
 
-    # 1. 영어 데이터: c4 데이터셋 (일반 텍스트)
-    print("Loading English calibration data (c4)...")
-    try:
-        c4_dataset = load_dataset(
-            "allenai/c4",
-            "en",
-            split="train",
-            streaming=True,
-            trust_remote_code=True,
-        )
-        c4_samples = []
-        for i, sample in enumerate(c4_dataset):
-            if i >= num_samples // 2:
-                break
-            text = sample["text"]
-            if len(text) > 100:  # 너무 짧은 텍스트 제외
-                c4_samples.append(text)
-        calibration_data.extend(c4_samples)
-        print(f"  Loaded {len(c4_samples)} English samples")
-    except Exception as e:
-        print(f"  Warning: Failed to load c4 dataset: {e}")
+    print(f"Loading calibration data from LGAI-EXAONE/MANTA-1M...")
+    dataset = load_dataset(
+        "LGAI-EXAONE/MANTA-1M",
+        split="train",
+        trust_remote_code=True,
+    )
 
-    # 2. 한국어 데이터: 한국어 위키 또는 대화 데이터
-    print("Loading Korean calibration data...")
-    try:
-        # 한국어 위키 데이터
-        ko_dataset = load_dataset(
-            "wikimedia/wikipedia",
-            "20231101.ko",
-            split="train",
-            streaming=True,
-            trust_remote_code=True,
-        )
-        ko_samples = []
-        for i, sample in enumerate(ko_dataset):
-            if i >= num_samples // 4:
-                break
-            text = sample["text"]
-            if len(text) > 100:
-                ko_samples.append(text)
-        calibration_data.extend(ko_samples)
-        print(f"  Loaded {len(ko_samples)} Korean samples")
-    except Exception as e:
-        print(f"  Warning: Failed to load Korean dataset: {e}")
+    # 샘플 선택
+    if len(dataset) > num_samples:
+        indices = random.sample(range(len(dataset)), num_samples)
+        dataset = dataset.select(indices)
 
-    # 3. 수학/추론 데이터: GSM8K
-    print("Loading math calibration data (GSM8K)...")
-    try:
-        gsm8k = load_dataset("openai/gsm8k", "main", split="train")
-        gsm8k_samples = []
-        indices = random.sample(range(len(gsm8k)), min(num_samples // 4, len(gsm8k)))
-        for idx in indices:
-            sample = gsm8k[idx]
-            # 질문과 답변을 함께 사용
-            text = f"Question: {sample['question']}\nAnswer: {sample['answer']}"
-            gsm8k_samples.append(text)
-        calibration_data.extend(gsm8k_samples)
-        print(f"  Loaded {len(gsm8k_samples)} math samples")
-    except Exception as e:
-        print(f"  Warning: Failed to load GSM8K dataset: {e}")
-
-    # 데이터 셔플
-    random.shuffle(calibration_data)
-
-    # 최종 샘플 수 조정
-    calibration_data = calibration_data[:num_samples]
-    print(f"Total calibration samples: {len(calibration_data)}")
+    print(f"Selected {len(dataset)} samples for calibration")
 
     # 토크나이즈
     print("Tokenizing calibration data...")
     tokenized_data = []
-    for text in calibration_data:
+    for sample in dataset:
+        text = sample.get("text", sample.get("content", ""))
+        if not text:
+            continue
+
         tokens = tokenizer(
             text,
             truncation=True,
@@ -127,6 +77,7 @@ def prepare_calibration_data(
         )
         tokenized_data.append(tokens)
 
+    print(f"Total calibration samples: {len(tokenized_data)}")
     return tokenized_data
 
 
