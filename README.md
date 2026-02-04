@@ -35,11 +35,11 @@ vLLM 추론 엔진을 고정된 환경으로 사용합니다. <br>
 $$Score = \max(0.5 \times PerfNorm_{model} + 0.5 \times SpeedNorm_{model}, 0)$$
 
 2. 성능 정규화 지표 ($PerfNorm_{model}$): <br>
-기본 모델(EXAONE-4.0-1.2B) 대비 성능 비율을 나타냅니다.
+기본 모델(EXAONE-4.0-1.2B) 대비 성능 비율을 나타냅니다. <br>
 $$PerfNorm_{model} = \frac{Perf_{model}}{Perf_{base\_model}}$$
 
 3. 속도 정규화 지표 ($SpeedNorm_{model}$): <br>
-기본 모델 대비 토큰당 추론 시간 감소 비율을 나타냅니다.
+기본 모델 대비 토큰당 추론 시간 감소 비율을 나타냅니다. <br>
 $$SpeedNorm_{model} = 1 - \frac{\left(\frac{Time_{model}}{Tokens_{model}}\right)}{\left(\frac{Time_{base\_model}}{Tokens_{base\_model}}\right)}$$
 
 ### 테스트 데이터
