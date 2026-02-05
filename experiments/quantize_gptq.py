@@ -14,6 +14,7 @@ EXAONE-4.0-1.2B GPTQ 4bit 양자화 스크립트
 """
 
 import os
+import json
 import argparse
 import random
 from pathlib import Path
@@ -90,12 +91,34 @@ def prepare_calibration_data(
     return tokenized_data
 
 
+def disable_marlin(output_path: str):
+    """
+    config.json에서 sym 키를 제거하여 Marlin 비호환으로 만듦.
+
+    vLLM의 is_gptq_marlin_compatible()는 sym이 None이면 False를 반환.
+    이로써 순수 GPTQ 커널(exllama v2)을 사용하게 됨.
+    양자화 가중치 자체는 변경되지 않으므로 품질은 동일.
+    """
+    config_path = os.path.join(output_path, "config.json")
+    with open(config_path) as f:
+        config = json.load(f)
+
+    if "quantization_config" in config and "sym" in config["quantization_config"]:
+        del config["quantization_config"]["sym"]
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print("  Removed 'sym' from quantization_config -> Marlin disabled")
+    else:
+        print("  Warning: quantization_config or sym not found")
+
+
 def quantize_model(
     model_path: str,
     output_path: str,
     num_samples: int = 1024,
     max_length: int = 2048,
     seed: int = 42,
+    no_marlin: bool = False,
 ):
     """
     GPTQ 4bit 양자화 수행
@@ -163,9 +186,16 @@ def quantize_model(
     model.save(output_path)
     tokenizer.save_pretrained(output_path)
 
+    # Marlin 비활성화 후처리
+    if no_marlin:
+        print("\nDisabling Marlin kernel compatibility...")
+        disable_marlin(output_path)
+
     print("\n" + "=" * 60)
     print("Quantization completed!")
     print("=" * 60)
+    if no_marlin:
+        print("  Marlin: DISABLED (using pure GPTQ / exllama v2 kernel)")
     print(f"\nOutput directory: {output_path}")
     print("\nExpected config.json quantization_config:")
     print("""
@@ -221,6 +251,11 @@ def main():
         default=42,
         help="랜덤 시드",
     )
+    parser.add_argument(
+        "--no-marlin",
+        action="store_true",
+        help="Marlin 커널 비활성화 (순수 GPTQ / exllama v2 커널 사용)",
+    )
 
     args = parser.parse_args()
 
@@ -230,6 +265,7 @@ def main():
         num_samples=args.num_samples,
         max_length=args.max_length,
         seed=args.seed,
+        no_marlin=args.no_marlin,
     )
 
 
