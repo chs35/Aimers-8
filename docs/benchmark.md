@@ -21,6 +21,7 @@ python benchmark.py gsm8k,hellaswag,arc_easy --model models/EXAONE-4.0-1.2B
 |-----|------|-------|------|
 | `--model` | `-m` | (필수) | 모델 경로 |
 | `--thinking` | `-t` | False | enable_thinking 활성화 |
+| `--limit` |  | None | 각 태스크에서 평가할 샘플 수 제한 (smoke test용) |
 
 ### enable_thinking 옵션
 
