@@ -26,7 +26,7 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 import yaml
 import lm_eval
-from lm_eval.models import get_model
+from lm_eval.models.vllm_causallms import VLLM
 from transformers import AutoTokenizer
 
 # 벤치마크 설정 파일
@@ -213,7 +213,14 @@ def run_benchmark(
         # 모델 로드 시간 측정 (추론 시간과 분리)
         print(f"Loading model...")
         model_load_start = time.time()
-        lm = get_model("vllm", model_args)
+        lm = VLLM(
+            pretrained=model_path,
+            tensor_parallel_size=VLLM_SETTINGS["tensor_parallel_size"],
+            gpu_memory_utilization=VLLM_SETTINGS["gpu_memory_utilization"],
+            max_gen_toks=VLLM_SETTINGS["max_gen_toks"],
+            trust_remote_code=VLLM_SETTINGS["trust_remote_code"],
+            enforce_eager=VLLM_SETTINGS["enforce_eager"],
+        )
         model_load_time = time.time() - model_load_start
         print(f"Model loaded in {model_load_time:.2f}s")
 
