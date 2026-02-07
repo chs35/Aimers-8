@@ -1,0 +1,137 @@
+02:43:21 [INFO] Log file: logs/kolongrag_20260208_024321.log
+02:43:21 [INFO] ============================================================
+02:43:21 [INFO] Dataset : LGAI-EXAONE/Ko-LongRAG
+02:43:21 [INFO] Mode    : quick (singledocqa_100~199)
+02:43:29 [INFO] Samples : 100
+02:43:29 [INFO] Loaded in 8.4s
+02:43:29 [INFO] ============================================================
+02:43:29 [INFO] Loading tokenizer: models/EXAONE-4.0-1.2B
+02:43:36 [INFO] Formatting prompts with chat template...
+02:43:36 [INFO]   100 prompts ready
+02:43:29 [INFO]   prompt token lengths (first 3): [12468, 15090, 14176]
+02:43:29 [INFO] Initializing vLLM: models/EXAONE-4.0-1.2B
+02:43:29 [DEBUG]   vLLM kwargs: {'tensor_parallel_size': 1, 'gpu_memory_utilization': 0.85, 'trust_remote_code': True, 'max_gen_toks': 16384}
+02:43:43 [INFO]   model loaded in 14.6s
+02:43:43 [DEBUG]   sampling_params: temp=0.0, top_p=1.0, max_tokens=16384
+02:43:43 [INFO] Running inference (max_tokens=16384, temperature=0.0) ...
+02:46:14 [INFO]   inference done in 150.8s
+02:46:14 [INFO] Evaluating with GPT-4o judge (100 samples) ...
+02:46:16 [DEBUG]   [0] correct=True ref='1945년 3월 10일입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:17 [DEBUG]   [1] correct=True ref='약 4만 ~ 5만 년 전부터입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:18 [DEBUG]   [2] correct=True ref='아이치현' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:19 [DEBUG]   [3] correct=True ref='연극배우로 데뷔했으며, SBS 프로그램 "웃찾사"에서 정식 개그맨으로 데뷔했습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:20 [DEBUG]   [4] correct=True ref='입 모양은 S자형을 이루며, 도르래 부분은 부식이 심하여 본래의 기능을 상실한 상태입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:23 [DEBUG]   [5] correct=True ref='주다스 프리스트는 음반 《Turbo》에 수록된 곡 〈Parental Guidance〉를 녹음했다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:23 [DEBUG]   [6] correct=True ref='6점차' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:24 [DEBUG]   [7] correct=False ref='두브로브니크는 아름다운 고딕, 르네상스, 바로크 양식의 건축물과 역사적 중요성으로 "아드리아 해의 진주"라 judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:26 [DEBUG]   [8] correct=False ref='44년.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:27 [DEBUG]   [9] correct=False ref='수산화 암모늄이 아질산으로 변한다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:28 [DEBUG]   [10] correct=True ref='안신현에는 9개의 진과 3개의 향이 있습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:29 [DEBUG]   [11] correct=True ref='폴란드입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:29 [DEBUG]   [12] correct=True ref='마쓰다이라 노부미치 (1676년)입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:31 [DEBUG]   [13] correct=False ref='George Seymour Lyon' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:31 [DEBUG]   [14] correct=False ref='한다혜가 개그우먼으로 데뷔한 연도는 2014년입니다. 그녀가 데뷔할 당시의 나이는 25세였습니다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:32 [DEBUG]   [15] correct=False ref='사춘기 소녀의 일상생활' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:32 [DEBUG]   [16] correct=True ref='1996년에서 2001년 사이에 탈레반 정권은 아프가니스탄의 국기를 변경했습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:33 [DEBUG]   [17] correct=True ref='경상북도 김천시 혁신로 316-20에 위치하고 있습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:33 [DEBUG]   [18] correct=True ref='외스케멘을 연고로 하며, 카자흐스탄 프리미어리그에 참가하고 있습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:41 [DEBUG]   [19] correct=False ref='33세.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:41 [INFO]   [20/100] correct so far: 13
+02:46:35 [DEBUG]   [20] correct=True ref='맨하튼 메리-고-라운드' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:35 [DEBUG]   [21] correct=True ref='1959년 2월 1일.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:36 [DEBUG]   [22] correct=True ref='양성자 펌프 억제제; 아스트라제네카.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:36 [DEBUG]   [23] correct=True ref='오덴세.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:37 [DEBUG]   [24] correct=True ref='스코틀랜드' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:37 [DEBUG]   [25] correct=True ref='러성' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:38 [DEBUG]   [26] correct=True ref='Yes.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:38 [DEBUG]   [27] correct=True ref='크라운 에터의 합성' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:39 [DEBUG]   [28] correct=False ref='2011년, 晚间新闻(만간신문, Nightly News)' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:39 [DEBUG]   [29] correct=True ref='베네수엘라에서 반란군이 쿠데타 시 투카노를 사용해 정부군을 공격했으며, 페루에서는 세네파 전쟁 중 야간 폭 judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:40 [DEBUG]   [30] correct=True ref='다게스탄 자치 소비에트 사회주의 공화국' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:40 [DEBUG]   [31] correct=False ref='- MSX: 자일로그 Z80A 3.58 MHz\n- MSX2: 자일로그 Z80 3.58 MHz\n- MSX judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:41 [DEBUG]   [32] correct=False ref='Su-35S는 제공권 장악 임무에 사용되었으며, 우크라이나 침공 기간 동안 지상의 목표물에 대한 공격을 수 judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:41 [DEBUG]   [33] correct=True ref='더 영 앤 더 레스트리스.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:42 [DEBUG]   [34] correct=True ref='캘리포니아주' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:43 [DEBUG]   [35] correct=True ref='제한된 번사이드 문제(restricted Burnside problem)' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:43 [DEBUG]   [36] correct=True ref='C) 1981' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:44 [DEBUG]   [37] correct=False ref='용삼의 이름은 어머니가 용 3마리가 나오는 태몽을 꾼 후 지어졌습니다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:44 [DEBUG]   [38] correct=True ref="'가' (加)" judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:44 [DEBUG]   [39] correct=True ref='매주 일요일 오전 11시부터 낮 12시까지.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:44 [INFO]   [40/100] correct so far: 29
+02:46:45 [DEBUG]   [40] correct=True ref='인디애나 주립 대학교.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:46 [DEBUG]   [41] correct=True ref='도로시 라무어, 윌리엄 홀든' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:46 [DEBUG]   [42] correct=True ref='양무참문' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:47 [DEBUG]   [43] correct=True ref='당신의 세상은 지금 몇 시? (2014년) - 배우, 파하드 역' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:47 [DEBUG]   [44] correct=True ref='지방부이사관, 지방임기제공무원.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:48 [DEBUG]   [45] correct=True ref='미국 국토안보부' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:48 [DEBUG]   [46] correct=False ref='미국이 특별히 추가한 조항은 미국 시민권자를 미국 영사에 의해서만 재판할 수 있는 치외법권을 인정하는 것이 judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:49 [DEBUG]   [47] correct=True ref='황금독수리' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:56 [DEBUG]   [48] correct=True ref='다크 시티, 레퀴엠.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:49 [DEBUG]   [49] correct=True ref="5˚8'입니다." judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:50 [DEBUG]   [50] correct=True ref='93%' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:51 [DEBUG]   [51] correct=True ref='7개 주로 이루어져 있습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:51 [DEBUG]   [52] correct=True ref='7명' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:52 [DEBUG]   [53] correct=True ref='2개입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:52 [DEBUG]   [54] correct=True ref='딸기우유는 딸기나 딸기 시럽 또는 딸기향을 넣어 만든 우유이다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:53 [DEBUG]   [55] correct=True ref='산스크리트.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:53 [DEBUG]   [56] correct=False ref='정유.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:54 [DEBUG]   [57] correct=True ref='영어 부문' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:01 [DEBUG]   [58] correct=True ref='피터 웰러' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:54 [DEBUG]   [59] correct=True ref='크림 반도의 그리스어 표기에서 유래되었습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:54 [INFO]   [60/100] correct so far: 47
+02:46:55 [DEBUG]   [60] correct=True ref='고대 그리스 전설에서는 헤라클레스 일족의 귀환이 도리스인이 펠로폰네소스 반도를 소유하게 된 것으로 설명됩니 judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:55 [DEBUG]   [61] correct=True ref='중국의 음식입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:56 [DEBUG]   [62] correct=False ref='아니오.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:56 [DEBUG]   [63] correct=True ref='전력 절감' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:04 [DEBUG]   [64] correct=True ref='에밀리 데이셔넬.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:57 [DEBUG]   [65] correct=True ref='소스 코드를 직접 실행하거나, 소스 코드를 중간 코드로 변환하여 실행하거나, 미리 컴파일된 저장 코드의 실 judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:58 [DEBUG]   [66] correct=True ref='820년' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:58 [DEBUG]   [67] correct=False ref="'경이의 심정'은 '무식의 자각을 감내'하는 것으로 철학의 시작을 도왔다." judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:46:59 [DEBUG]   [68] correct=True ref='세 도시에 존재합니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:46:59 [DEBUG]   [69] correct=True ref='슈퍼나뭇잎' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:00 [DEBUG]   [70] correct=True ref='홍콩 국제공항 노선.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:00 [DEBUG]   [71] correct=True ref='겐나디 야나예프' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:01 [DEBUG]   [72] correct=True ref='스카이 드라마, 스카이 엔터.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:02 [DEBUG]   [73] correct=False ref='5학급으로 시작했습니다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:02 [DEBUG]   [74] correct=True ref='라로슈쉬르용.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:03 [DEBUG]   [75] correct=True ref='1996년' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:04 [DEBUG]   [76] correct=False ref='여름입니다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:04 [DEBUG]   [77] correct=False ref='1면 1선의 구조를 가지고 있으며, 1986년 4월 1일에 무인역화되었습니다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:04 [DEBUG]   [78] correct=False ref='학교 설립자인 홍의표 전 총장의 교비 횡령 및 신입생 충원 부진 때문입니다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:05 [DEBUG]   [79] correct=True ref='735번.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:05 [INFO]   [80/100] correct so far: 61
+02:47:05 [DEBUG]   [80] correct=True ref='릭 앨런이 데프 레퍼드의 《X》 음반에서 작사, 작곡에 적극적으로 참여했습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:06 [DEBUG]   [81] correct=False ref='그렌다(Glenda)입니다.' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:06 [DEBUG]   [82] correct=True ref='파주시' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:07 [DEBUG]   [83] correct=True ref='난과 식물의 신품종 육성과 산업화 촉진, 2011년, 대구.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:08 [DEBUG]   [84] correct=True ref='스파르타입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:08 [DEBUG]   [85] correct=True ref='에세이 작가입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:09 [DEBUG]   [86] correct=True ref='훗카이도에서 우연히 만났습니다. 대한민국 개봉 날짜는 2020년 11월 5일입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:16 [DEBUG]   [87] correct=True ref='오스트레일리아의 모델입니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:09 [DEBUG]   [88] correct=True ref='19세기~20세기 동안.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:10 [DEBUG]   [89] correct=True ref='2010년.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:11 [DEBUG]   [90] correct=True ref='비단이나 종이.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:11 [DEBUG]   [91] correct=True ref='세조 시기에 설립되었으며, 11년 동안 존재했습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:12 [DEBUG]   [92] correct=True ref='10명' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:12 [DEBUG]   [93] correct=False ref='SK 슬라비아 프라하' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:13 [DEBUG]   [94] correct=False ref='신' judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:13 [DEBUG]   [95] correct=True ref='흰줄무늬산토끼는 주로 뉴멕시코주 남부와 멕시코 남서부와 중부 지역에서 발견되며, 2종의 아종이 있습니다.' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:14 [DEBUG]   [96] correct=False ref='6.25 전쟁 당시 상관인 연대장이 술을 주었을 때와 1968년 박정희 대통령이 주최한 만찬에서 직접 대통 judge={'long_ans': 'incorrect', 'short_ans': 'incorrect'}
+02:47:14 [DEBUG]   [97] correct=True ref='로열티, 왕실' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:15 [DEBUG]   [98] correct=True ref='신밧드와 마법의 눈' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:15 [DEBUG]   [99] correct=True ref='패왕' judge={'long_ans': 'correct', 'short_ans': 'correct'}
+02:47:15 [INFO]   [100/100] correct so far: 77
+02:47:15 [INFO] ============================================================
+02:47:15 [INFO] RESULTS
+02:47:15 [INFO] ============================================================
+02:47:15 [INFO]   Dataset      : LGAI-EXAONE/Ko-LongRAG
+02:47:15 [INFO]   Model        : models/EXAONE-4.0-1.2B
+02:47:15 [INFO]   Samples      : 100
+02:47:15 [INFO]   Accuracy     : 0.7700 (77/100)
+02:47:15 [INFO]   Output Tokens: 2409
+02:47:15 [INFO]   Inference    : 150.80s
+02:47:15 [INFO]   TPS          : 15.97 tokens/s
+02:47:15 [INFO]   Model Load   : 14.60s
+02:47:15 [INFO] Result saved: results/20260208_024715_EXAONE-4.0-1.2B_Ko-LongRAG.json
+02:47:15 [INFO] CSV saved  : results/20260208_024715_EXAONE-4.0-1.2B_Ko-LongRAG.csv
+02:47:15 [INFO] ============================================================
