@@ -1,113 +1,225 @@
-아래 계획서는 **(1) GPTQ 4bit로 양자화한 체크포인트를 만들고**, **(2) vLLM이 서버에서 플래그 없이도 자동으로 “Marlin 커널 경로”를 타게** 하도록 **모델 파일(`config.json`)에 필요한 메타데이터를 내장**하는 것을 목표로 합니다. (vLLM은 `--quantization`이 None이면 `config.json`의 `quantization_config`를 먼저 확인합니다. ([vLLM][1]))
+# EXAONE-4.0-1.2B 새로운 양자화 플랜
+
+## Context: 왜 새 플랜이 필요한가
+
+기존 GPTQ 4bit 양자화 결과가 **속도도 느리고 정확도도 떨어지는** 최악의 결과를 보임:
+
+| 모델 | ms/token | GSM8K 정확도(strict) | KV cache |
+|------|----------|---------------------|----------|
+| **Base (BF16)** | 1.598 | 67.25% | 229,808 |
+| **GPTQ 4bit** | **1.967 (+23%)** | **61.03% (-6.2%p)** | 293,584 |
+
+**근본 원인 (issue_repot.md 분석):**
+1. L4(SM89, Ada Lovelace)에서 Marlin 커널 + bf16 조합이 비효율적
+2. 1.2B 소형 모델에서 Weight-only INT4는 TPOT에 거의 도움이 안 됨 (attention/KV가 병목)
+3. GPTQ 캘리브레이션으로 인한 정확도 하락
 
 ---
 
-# EXAONE-4.0-1.2B GPTQ 4bit(마릴린) 양자화 계획서
+## 평가 산식 분석
 
-## 0) 목표 / 성공 기준
+```
+Score = 0.5 × PerfNorm + 0.5 × SpeedNorm
+PerfNorm = Perf_model / Perf_base  (정확도 비율)
+SpeedNorm = 1 - (ms/token)_model / (ms/token)_base  (속도 개선 비율)
+```
 
-### 목표
+**핵심 인사이트:** 정확도 1%p 하락 = 속도 1%p 개선과 동일한 가치. 따라서 **정확도 손실이 적으면서 속도가 올라가는 방법**이 최선.
 
-* L4에서 **decode latency/token 감소** (토큰당 추론 시간 단축)
-* 평가 서버에서 **런타임 플래그 없이** 업로드한 모델만으로 **GPTQ 4bit + (가능 시) Marlin 커널**을 사용하도록 구성
-
-### 성공 기준(측정 지표)
-
-* 동일 조건(동일 max_tokens / temperature=0 / 동일 프롬프트 길이)에서
-
-  * **latency/token**: FP16 대비 유의미한 감소
-
----
-
-## 1) 핵심 제약과 설계 원칙
-
-### 제약
-
-* 평가 서버에서 `--quantization gptq_marlin` 같은 **플래그 지정 불가**
-* **모델 파일만** 업로드 가능
-
-### 설계 원칙
-
-* 원본 모델의 위치는 models/EXAONE-4.0-1.2B에 위치할 예정 (평가서버에는 이미 존재함)
-* vLLM이 **모델의 `config.json`에 포함된 `quantization_config`를 읽어 자동 인식**하도록 만든다.
-* `quant_method`는 기본적으로 **"gptq"로 두고**, vLLM이 런타임에 **“convertible to gptq_marlin… Using gptq_marlin kernel.”** 경로로 자동 전환되게 유도한다. (실제 L4 환경 사례)
-
-  * 이유: 강제로 `gptq_marlin`을 지정하면 **모델 config의 quant_method와 불일치**로 에러가 나는 케이스가 보고되어 있음.
+| 시나리오 | PerfNorm | SpeedNorm | Score |
+|---------|----------|-----------|-------|
+| 베이스 모델 (변화 없음) | 1.00 | 0.00 | **0.500** |
+| FP8 W8A8 (99% 정확도, 25% 빠름) | 0.99 | 0.25 | **0.620** |
+| AWQ 4bit (93% 정확도, 40% 빠름) | 0.93 | 0.40 | **0.665** |
+| 기존 GPTQ 4bit (91% 정확도, -23% 느림) | 0.91 | -0.23 | **0.340** |
 
 ---
 
-## 2) Marlin 호환 GPTQ 4bit 설정(권장 기본값)
+## 전략: 3단계 우선순위
 
-Marlin 경로를 타려면 **“Marlin이 지원하는 형태”**로 GPTQ를 만들어야 합니다.
+### [우선순위 1] FP8 W8A8 Dynamic (가장 유망)
 
-### 필수 성격(권장)
+**왜 이게 최선인가:**
+- L4는 Ada Lovelace(SM89)로 **FP8 텐서코어 하드웨어 네이티브 지원**
+- W8A8 = Weight + Activation 모두 양자화 → **compute 자체를 줄여 TPOT 직접 감소**
+- 정확도 손실 거의 없음 (near-lossless, PerfNorm ≈ 0.99+)
+- **캘리브레이션 데이터 불필요** (Dynamic quantization)
+- vLLM이 compressed-tensors 포맷 **자동 인식** (런타임 플래그 불필요)
+- 평가 서버에 `compressed-tensors==0.13.0` 이미 설치됨
 
-* **bits = 4**
-* **sym = true (대칭 양자화)**
+**구현 (llmcompressor 사용):**
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from llmcompressor import oneshot
+from llmcompressor.modifiers.quantization import QuantizationModifier
 
-  * vLLM의 GPTQ-Marlin 구성은 (4bit, sym=True) 같은 케이스를 타입 맵으로 갖고 있어, 대칭이 핵심 전제입니다. ([vLLM][3])
-  * 또한 GPTQModel 문서/안내에서도 **Marlin이 비대칭(asymmetric)을 항상 지원하는 건 아니다**는 맥락이 있습니다. ([Hugging Face][4])
-* **desc_act = false** (Marlin 경로/변환에서 자주 요구되는 설정으로 알려져 있고, 실제 예시 config에도 false로 들어가 있음) ([GitHub][2])
-* **group_size = 128** (속도/품질/호환성의 표준적인 타협점)
+model = AutoModelForCausalLM.from_pretrained(
+    "LGAI-EXAONE/EXAONE-4.0-1.2B",
+    device_map="auto",
+    torch_dtype="auto",
+    trust_remote_code=True,
+)
+tokenizer = AutoTokenizer.from_pretrained(
+    "LGAI-EXAONE/EXAONE-4.0-1.2B",
+    trust_remote_code=True,
+)
 
-### “실전적으로 무난한” 베이스 config (예시)
+recipe = QuantizationModifier(
+    targets="Linear",
+    scheme="FP8_DYNAMIC",
+    ignore=["lm_head"],
+)
 
-아래처럼 `quantization_config`가 `config.json`에 들어가게 만드는 것이 목표입니다(형태는 GPTQ로 저장한 체크포인트가 보통 자동 생성).
+oneshot(model=model, recipe=recipe)
 
+model.save_pretrained("models/EXAONE-4.0-1.2B-fp8-w8a8", save_compressed=True)
+tokenizer.save_pretrained("models/EXAONE-4.0-1.2B-fp8-w8a8")
+```
+
+**config.json에 자동 생성되는 설정:**
 ```json
-"quantization_config": {
-  "bits": 4,
-  "group_size": 128,
-  "desc_act": false,
-  "sym": true,
-  "true_sequential": true,
-  "damp_percent": 0.1,
-  "quant_method": "gptq"
+{
+  "quantization_config": {
+    "quant_method": "compressed-tensors",
+    ...
+  }
 }
 ```
 
-> 주의: 위 키들 중 일부(예: exllama_config, use_exllama 등)는 툴체인에 따라 자동으로 추가되기도 합니다. 핵심은 **bits / group_size / desc_act / sym / quant_method**가 명확히 들어가고, `quant_method`를 **gptq**로 유지하는 것입니다.
+**중요: config.json의 `torch_dtype`을 `"float16"`으로 설정**
+- L4에서 bf16보다 fp16이 양자화 커널과 더 잘 호환됨
+
+**기대 효과:**
+- PerfNorm: ~0.97-1.00 (거의 무손실)
+- SpeedNorm: ~0.15-0.30 (15-30% 속도 향상)
+- Score: ~0.56-0.65
 
 ---
 
-## 3) 구현 절차(오프라인 양자화 → 업로드 산출물 생성)
+### [우선순위 2] AWQ 4bit + fp16 + Marlin (공격적 속도 전략)
 
-### Step 1. 캘리브레이션 데이터 준비
+**왜 AWQ인가 (GPTQ 대신):**
+- Ada Lovelace에서 AWQ Marlin이 GPTQ Marlin보다 **~15% 빠름** (RTX 4090 벤치마크)
+- AWQ가 GPTQ보다 정확도 보존이 더 좋음 (캘리브레이션 오버피팅 적음)
+- 다만 AWQ는 **반드시 float16 필수** (bf16 미지원 → ValueError 발생)
 
-* 목적: GPTQ는 캘리브레이션 샘플이 품질에 직접 영향
-* 권장:
+**구현 (autoawq 사용):**
+```python
+from awq import AutoAWQForCausalLM
+from transformers import AutoTokenizer
 
-  * 512~2k 샘플
-  * 한국어/영어 혼합 + 평가 도메인(수학/추론/지시문 등) 비중 반영
-  * 입력 길이도 짧은/긴 케이스 섞기 (짧은 질문만 쓰면 긴 컨텍스트에서 오차가 커질 수 있음)
+model = AutoAWQForCausalLM.from_pretrained(
+    "LGAI-EXAONE/EXAONE-4.0-1.2B",
+    trust_remote_code=True,
+)
+tokenizer = AutoTokenizer.from_pretrained(
+    "LGAI-EXAONE/EXAONE-4.0-1.2B",
+    trust_remote_code=True,
+)
 
-### Step 2. GPTQModel 기반 4bit 양자화 수행
+quant_config = {
+    "zero_point": True,
+    "q_group_size": 128,
+    "w_bit": 4,
+    "version": "GEMM",
+}
 
-* vLLM은 GPTQModel 기반 양자화 체크포인트를 공식적으로 다룹니다.
-* 실무 권장: **GPTQModel로 “GPTQ 포맷” 저장** → vLLM이 읽는 표준 HF 디렉토리 형태로 저장
+model.quantize(tokenizer, quant_config=quant_config, calib_data=calib_dataset)
+model.save_quantized("models/EXAONE-4.0-1.2B-awq-4bit")
+tokenizer.save_pretrained("models/EXAONE-4.0-1.2B-awq-4bit")
+```
 
-* 설정값:
-  * bits=4, group_size=128, sym=True, desc_act=False
-  * true_sequential=True(품질 쪽 방어)
-  * damp_percent=0.01~0.1 (0.1이 예시로 자주 보임)
+**후처리 필수:** config.json의 `torch_dtype`을 `"float16"`으로 변경
+
+**기대 효과:**
+- PerfNorm: ~0.90-0.95
+- SpeedNorm: ~0.30-0.45
+- Score: ~0.60-0.70
+
+**리스크:** autoawq가 평가 서버에 설치되어 있지 않으므로, AWQ 모델이 vLLM의 `awq_marlin` 경로를 자동으로 타는지 확인 필요. vLLM은 config.json의 `quant_method: "awq"`를 보고 자동 로딩하므로 괜찮을 것으로 예상.
 
 ---
 
-## 4) “플래그 없이 Marlin 경로”를 보장하기 위한 파일 내장 전략
+### [우선순위 3] INT8 W8A8 (SmoothQuant) — 안전한 대안
 
-### 4.1 vLLM 동작 기대치
+**FP8가 L4에서 문제가 있을 경우 대비:**
+- INT8은 SM75(Turing)부터 지원 → L4에서 확실히 동작
+- SmoothQuant으로 activation 분포 안정화
+- 캘리브레이션 데이터 필요
 
-* 서버에서 `--quantization`을 안 주면(=None) vLLM은 **모델 config의 `quantization_config`를 먼저 본다**
-* 이때 `quant_method: "gptq"`로 로딩하되, 모델이 Marlin 변환 가능하면 런타임에
-  **“convertible to gptq_marlin… Using gptq_marlin kernel.”**로 자동 전환되는 사례가 있습니다(L4에서 실제로 관측).
+**구현:**
+```python
+from llmcompressor import oneshot
+from llmcompressor.modifiers.quantization import GPTQModifier
+from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
 
-### 4.2 왜 `quant_method`를 gptq로 유지하나?
+recipe = [
+    SmoothQuantModifier(smoothing_strength=0.8),
+    GPTQModifier(targets="Linear", scheme="W8A8", ignore=["lm_head"]),
+]
 
-* `quant_method`가 gptq인 모델을 `gptq_marlin`로 강제 지정하면 **불일치 에러**가 날 수 있음.
-* 우리는 플래그를 못 주는 환경이므로, **애초에 불일치 가능성을 최소화하는 구성이 안전**합니다.
+oneshot(
+    model=model,
+    dataset=calibration_ds,
+    recipe=recipe,
+    max_seq_length=2048,
+    num_calibration_samples=512,
+)
+```
 
 ---
 
-## 5) 산출물(최종 제출물)
+### [즉시 테스트] 기존 GPTQ 모델 fp16 전환
 
-* `models/EXAONE-4.0-1.2B-gptq-4bit-g128-sym/` (폴더)
+기존 GPTQ 4bit 모델의 config.json에서 `torch_dtype`만 `"float16"`으로 바꿔서 벤치마크 재실행. Marlin+bf16 문제가 원인이면 이것만으로 TPOT가 개선될 수 있음.
+
+---
+
+## 실행 계획
+
+### Step 1: 기존 GPTQ fp16 전환 테스트 (즉시, 10분)
+- `models/EXAONE-4.0-1.2B-gptq-4bit-g128-sym/config.json` 에서 `torch_dtype` → `"float16"` 변경
+- 벤치마크 실행하여 ms/token 변화 확인
+- H1(Marlin+bf16 비효율) 가설 검증
+
+### Step 2: FP8 W8A8 Dynamic 양자화 스크립트 작성 및 실행
+- `experiments/quantize_fp8_dynamic.py` 작성
+- llmcompressor의 `QuantizationModifier(scheme="FP8_DYNAMIC")` 사용
+- 캘리브레이션 불필요 → 빠른 실행
+- 결과 모델의 config.json에서 `torch_dtype`을 `"float16"`으로 확인/수정
+
+### Step 3: FP8 모델 벤치마크
+- `python benchmark.py gsm8k -m models/EXAONE-4.0-1.2B-fp8-w8a8`
+- ms/token, 정확도 확인
+- PerfNorm, SpeedNorm 계산
+
+### Step 4: (FP8 결과가 부족하면) AWQ 4bit 양자화
+- `experiments/quantize_awq.py` 작성
+- autoawq 라이브러리 사용
+- 캘리브레이션 데이터: MANTA-1M
+- 반드시 fp16 dtype 설정
+
+### Step 5: 최종 모델 선정 및 submit.zip 패키징
+- 가장 Score가 높은 모델 선택
+- `model/` 디렉토리로 패키징
+- 제출 용량 확인 (10GB 이내)
+
+---
+
+## 수정/생성할 파일
+
+| 파일 | 작업 |
+|------|------|
+| `experiments/quantize_fp8_dynamic.py` | **신규 생성** - FP8 W8A8 양자화 스크립트 |
+| `experiments/quantize_awq.py` | **신규 생성** - AWQ 4bit 양자화 스크립트 (Step 4) |
+| 기존 GPTQ 모델 `config.json` | `torch_dtype` → `"float16"` 변경 (Step 1 테스트) |
+
+---
+
+## 검증 방법
+
+1. **속도 검증:** `python benchmark.py gsm8k -m models/<모델>` 실행하여 ms/token 측정
+2. **정확도 검증:** GSM8K strict-match로 PerfNorm 계산
+3. **Score 계산:** `Score = 0.5 * (정확도/베이스정확도) + 0.5 * (1 - ms_per_token/베이스ms_per_token)`
+4. **제출 호환성:** vLLM이 런타임 플래그 없이 모델을 자동 로딩하는지 확인
+5. **용량 확인:** 모델 디렉토리 크기 < 10GB (압축 전)
