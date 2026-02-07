@@ -143,29 +143,27 @@ def main():
         help="유지할 레이어 수 (자동 선택)",
     )
     parser.add_argument(
-        "--layer-indices",
+        "--remove",
         type=str,
         default=None,
-        help="유지할 레이어 인덱스 (쉼표 구분, 예: 0,1,2,5,10,15,28,29)",
+        help="제거할 레이어 인덱스 (쉼표 구분, 예: 25,26,27)",
     )
 
     args = parser.parse_args()
 
     total_layers = 30  # EXAONE-4.0-1.2B
 
-    if args.layer_indices:
-        layer_indices = [int(x) for x in args.layer_indices.split(",")]
+    if args.remove:
+        remove_indices = set(int(x) for x in args.remove.split(","))
+        for idx in remove_indices:
+            if idx < 0 or idx >= total_layers:
+                parser.error(f"레이어 인덱스 {idx}가 범위 밖입니다 (0-{total_layers-1})")
+        layer_indices = [i for i in range(total_layers) if i not in remove_indices]
     elif args.keep_layers:
         layer_indices = select_layers(total_layers, args.keep_layers)
     else:
-        parser.error("--keep-layers 또는 --layer-indices 중 하나를 지정하세요")
+        parser.error("--remove 또는 --keep-layers 중 하나를 지정하세요")
 
-    # 유효성 검사
-    for idx in layer_indices:
-        if idx < 0 or idx >= total_layers:
-            parser.error(f"레이어 인덱스 {idx}가 범위 밖입니다 (0-{total_layers-1})")
-
-    layer_indices = sorted(set(layer_indices))
     n = len(layer_indices)
     output_path = os.path.join(args.output_dir, f"EXAONE-4.0-1.2B-pruned-{n}L")
 
