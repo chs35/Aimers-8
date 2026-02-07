@@ -180,16 +180,23 @@ def quantize_model(
         seed=seed,
     )
 
-    # FP8 Static W8A8 양자화 레시피
+    # FP8 Static W8A8 양자화 레시피 + KV cache FP8
     print("\nQuantization config:")
     print("  scheme: FP8 (Static W8A8)")
     print("  targets: Linear")
     print("  ignore: ['lm_head']")
+    print("  kv_cache_scheme: FP8 E4M3 dynamic (per-tensor)")
 
     recipe = QuantizationModifier(
         targets="Linear",
         scheme="FP8",
         ignore=["lm_head"],
+        kv_cache_scheme={
+            "type": "float",
+            "num_bits": 8,
+            "strategy": "tensor",
+            "dynamic": True,
+        },
     )
 
     # 양자화 적용
