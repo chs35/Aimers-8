@@ -16,34 +16,48 @@ from .utils import VLLM_DEFAULTS, strip_thinking
 
 log = logging.getLogger("kolongrag")
 
+_log_fh: logging.FileHandler | None = None
+
 
 def _setup_logging(run_name: str):
-    """콘솔 + logs/{run_name}.log 동시 출력 (vLLM 등 외부 로그도 파일에 기록)"""
-    root = logging.getLogger()
-    if root.handlers:
+    """kolongrag 로거에 콘솔 + 파일 핸들러 설정"""
+    global _log_fh
+
+    if log.handlers:
         return
 
+    log.setLevel(logging.DEBUG)
+    log.propagate = False  # root 로거 간섭 방지
+
     fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s — %(message)s", datefmt="%H:%M:%S"
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
     )
 
-    # root 로거: 파일 핸들러 (DEBUG) — vLLM, transformers 등 모든 로그 기록
-    root.setLevel(logging.DEBUG)
-    os.makedirs("logs", exist_ok=True)
-    log_path = f"logs/{run_name}.log"
-    fh = logging.FileHandler(log_path, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
-
-    # kolongrag 로거: 콘솔 핸들러 (INFO) — 우리 코드 출력만 콘솔에 표시
-    log.setLevel(logging.DEBUG)
+    # 콘솔: INFO 이상
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(fmt)
     log.addHandler(console)
 
+    # 파일: DEBUG 전부
+    os.makedirs("logs", exist_ok=True)
+    log_path = f"logs/{run_name}.log"
+    _log_fh = logging.FileHandler(log_path, encoding="utf-8")
+    _log_fh.setLevel(logging.DEBUG)
+    _log_fh.setFormatter(fmt)
+    log.addHandler(_log_fh)
+
     log.info(f"Log file: {log_path}")
+
+
+def _capture_vllm_logs():
+    """vLLM 초기화 후 호출 — vllm 로거 출력도 같은 파일에 기록"""
+    if _log_fh is None:
+        return
+    for name in ("vllm", "vllm.config", "vllm.engine"):
+        vllm_logger = logging.getLogger(name)
+        if _log_fh not in vllm_logger.handlers:
+            vllm_logger.addHandler(_log_fh)
 
 
 def run_benchmark(
@@ -131,6 +145,7 @@ def run_benchmark(
         "trust_remote_code": VLLM_DEFAULTS["trust_remote_code"],
     }
     llm = LLM(**llm_kwargs)
+    _capture_vllm_logs()
 
     model_load_time = time.time() - model_load_start
     log.info(f"  model loaded in {model_load_time:.1f}s")
