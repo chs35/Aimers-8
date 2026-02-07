@@ -1,9 +1,11 @@
 """벤치마크 실행 함수"""
 
 import csv
+import io
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -16,18 +18,47 @@ from .utils import VLLM_DEFAULTS, strip_thinking
 
 log = logging.getLogger("kolongrag")
 
-_log_fh: logging.FileHandler | None = None
+_log_file: io.TextIOWrapper | None = None
+
+
+class _TeeStream:
+    """stderr를 원본 + 파일에 동시 기록 (vLLM subprocess 로그 캡처용)"""
+
+    def __init__(self, original, log_file: io.TextIOWrapper):
+        self._original = original
+        self._log_file = log_file
+
+    def write(self, data):
+        self._original.write(data)
+        try:
+            self._log_file.write(data)
+            self._log_file.flush()
+        except (ValueError, OSError):
+            pass
+
+    def flush(self):
+        self._original.flush()
+        try:
+            self._log_file.flush()
+        except (ValueError, OSError):
+            pass
+
+    def fileno(self):
+        return self._original.fileno()
+
+    def isatty(self):
+        return self._original.isatty()
 
 
 def _setup_logging(run_name: str):
-    """kolongrag 로거에 콘솔 + 파일 핸들러 설정"""
-    global _log_fh
+    """kolongrag 로거 + stderr tee 설정"""
+    global _log_file
 
     if log.handlers:
         return
 
     log.setLevel(logging.DEBUG)
-    log.propagate = False  # root 로거 간섭 방지
+    log.propagate = False
 
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
@@ -42,22 +73,17 @@ def _setup_logging(run_name: str):
     # 파일: DEBUG 전부
     os.makedirs("logs", exist_ok=True)
     log_path = f"logs/{run_name}.log"
-    _log_fh = logging.FileHandler(log_path, encoding="utf-8")
-    _log_fh.setLevel(logging.DEBUG)
-    _log_fh.setFormatter(fmt)
-    log.addHandler(_log_fh)
+    _log_file = open(log_path, "a", encoding="utf-8")
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+
+    # stderr를 tee — vLLM subprocess(EngineCore) 출력도 파일에 기록
+    sys.stderr = _TeeStream(sys.__stderr__, _log_file)
 
     log.info(f"Log file: {log_path}")
-
-
-def _capture_vllm_logs():
-    """vLLM 초기화 후 호출 — vllm 로거 출력도 같은 파일에 기록"""
-    if _log_fh is None:
-        return
-    for name in ("vllm", "vllm.config", "vllm.engine"):
-        vllm_logger = logging.getLogger(name)
-        if _log_fh not in vllm_logger.handlers:
-            vllm_logger.addHandler(_log_fh)
 
 
 def run_benchmark(
@@ -146,7 +172,6 @@ def run_benchmark(
         "trust_remote_code": VLLM_DEFAULTS["trust_remote_code"],
     }
     llm = LLM(**llm_kwargs)
-    _capture_vllm_logs()
 
     model_load_time = time.time() - model_load_start
     log.info(f"  model loaded in {model_load_time:.1f}s")
