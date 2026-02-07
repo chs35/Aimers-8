@@ -1,0 +1,13 @@
+03:04:26 [INFO] Log file: logs/kolongrag_20260208_030426_EXAONE-4.0-1.2B.log
+03:04:26 [INFO] ============================================================
+03:04:26 [INFO] Dataset : LGAI-EXAONE/Ko-LongRAG
+03:04:26 [INFO] Mode    : quick (singledocqa_100~199)
+03:04:28 [INFO] Samples : 100
+03:04:28 [INFO] Loaded in 2.3s
+03:04:28 [INFO] ============================================================
+03:04:28 [INFO] Loading tokenizer: models/EXAONE-4.0-1.2B
+03:04:28 [INFO] Formatting prompts with chat template...
+03:04:28 [INFO]   100 prompts ready
+03:04:28 [INFO]   prompt token lengths (first 3): [12468, 15090, 14176]
+03:04:28 [INFO] Initializing vLLM: models/EXAONE-4.0-1.2B
+03:04:28 [DEBUG]   vLLM kwargs: {'tensor_parallel_size': 1, 'gpu_memory_utilization': 0.85, 'trust_remote_code': True, 'max_gen_toks': 16384}

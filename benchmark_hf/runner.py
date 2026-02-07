@@ -18,28 +18,30 @@ log = logging.getLogger("kolongrag")
 
 
 def _setup_logging(run_name: str):
-    """콘솔 + logs/{run_name}.log 동시 출력"""
-    if log.handlers:
+    """콘솔 + logs/{run_name}.log 동시 출력 (vLLM 등 외부 로그도 파일에 기록)"""
+    root = logging.getLogger()
+    if root.handlers:
         return
 
-    log.setLevel(logging.DEBUG)
     fmt = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+        "%(asctime)s [%(levelname)s] %(name)s — %(message)s", datefmt="%H:%M:%S"
     )
 
-    # 콘솔: INFO 이상
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    console.setFormatter(fmt)
-    log.addHandler(console)
-
-    # 파일: DEBUG 전부
+    # root 로거: 파일 핸들러 (DEBUG) — vLLM, transformers 등 모든 로그 기록
+    root.setLevel(logging.DEBUG)
     os.makedirs("logs", exist_ok=True)
     log_path = f"logs/{run_name}.log"
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
-    log.addHandler(fh)
+    root.addHandler(fh)
+
+    # kolongrag 로거: 콘솔 핸들러 (INFO) — 우리 코드 출력만 콘솔에 표시
+    log.setLevel(logging.DEBUG)
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+    log.addHandler(console)
 
     log.info(f"Log file: {log_path}")
 
