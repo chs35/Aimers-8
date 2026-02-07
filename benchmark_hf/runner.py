@@ -1,11 +1,11 @@
 """벤치마크 실행 함수"""
 
 import csv
-import io
 import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -18,42 +18,9 @@ from .utils import VLLM_DEFAULTS, strip_thinking
 
 log = logging.getLogger("kolongrag")
 
-_log_file: io.TextIOWrapper | None = None
-
-
-class _TeeStream:
-    """stderr를 원본 + 파일에 동시 기록 (vLLM subprocess 로그 캡처용)"""
-
-    def __init__(self, original, log_file: io.TextIOWrapper):
-        self._original = original
-        self._log_file = log_file
-
-    def write(self, data):
-        self._original.write(data)
-        try:
-            self._log_file.write(data)
-            self._log_file.flush()
-        except (ValueError, OSError):
-            pass
-
-    def flush(self):
-        self._original.flush()
-        try:
-            self._log_file.flush()
-        except (ValueError, OSError):
-            pass
-
-    def fileno(self):
-        return self._original.fileno()
-
-    def isatty(self):
-        return self._original.isatty()
-
 
 def _setup_logging(run_name: str):
-    """kolongrag 로거 + stderr tee 설정"""
-    global _log_file
-
+    """kolongrag 로거 + OS-level stderr tee (subprocess 로그 캡처)"""
     if log.handlers:
         return
 
@@ -65,7 +32,7 @@ def _setup_logging(run_name: str):
     )
 
     # 콘솔: INFO 이상
-    console = logging.StreamHandler()
+    console = logging.StreamHandler(stream=sys.__stderr__)
     console.setLevel(logging.INFO)
     console.setFormatter(fmt)
     log.addHandler(console)
@@ -73,15 +40,29 @@ def _setup_logging(run_name: str):
     # 파일: DEBUG 전부
     os.makedirs("logs", exist_ok=True)
     log_path = f"logs/{run_name}.log"
-    _log_file = open(log_path, "a", encoding="utf-8")
-
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
     log.addHandler(fh)
 
-    # stderr를 tee — vLLM subprocess(EngineCore) 출력도 파일에 기록
-    sys.stderr = _TeeStream(sys.__stderr__, _log_file)
+    # OS-level stderr redirect — vLLM subprocess(EngineCore) 출력 캡처
+    log_fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    original_stderr_fd = os.dup(2)  # 원본 stderr 보존
+    pipe_r, pipe_w = os.pipe()
+    os.dup2(pipe_w, 2)  # fd 2(stderr)를 pipe write 쪽으로 교체
+    os.close(pipe_w)
+
+    def _tee_thread():
+        """pipe에서 읽어서 원본 stderr + 로그 파일에 동시 기록"""
+        with os.fdopen(pipe_r, "r", errors="replace") as reader:
+            for line in reader:
+                os.write(original_stderr_fd, line.encode("utf-8", errors="replace"))
+                os.write(log_fd, line.encode("utf-8", errors="replace"))
+
+    t = threading.Thread(target=_tee_thread, daemon=True)
+    t.start()
+
+    log.info(f"Log file: {log_path}")
 
     log.info(f"Log file: {log_path}")
 
