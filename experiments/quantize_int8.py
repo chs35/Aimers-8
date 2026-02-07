@@ -10,7 +10,22 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llmcompressor import oneshot
 from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
+from llmcompressor.modifiers.smoothquant.utils import LayerMap
 from llmcompressor.modifiers.quantization import GPTQModifier
+
+
+# EXAONE-4.0 커스텀 SmoothQuant mappings
+# (input_layernorm 대신 post_attention_layernorm 사용)
+EXAONE4_SMOOTHQUANT_MAPPINGS = [
+    LayerMap(
+        balance_layers=["re:.*q_proj", "re:.*k_proj", "re:.*v_proj"],
+        smooth_layers="re:.*post_attention_layernorm",
+    ),
+    LayerMap(
+        balance_layers=["re:.*gate_proj", "re:.*up_proj"],
+        smooth_layers="re:.*post_feedforward_layernorm",
+    ),
+]
 
 
 def prepare_calibration_dataset(tokenizer, num_samples=2048, max_length=4096):
@@ -77,8 +92,12 @@ def quantize_int8(
     )
 
     # W8A8 INT8 레시피 (SmoothQuant + GPTQ)
+    # EXAONE-4.0 커스텀 mappings 사용
     recipe = [
-        SmoothQuantModifier(smoothing_strength=smoothing_strength),
+        SmoothQuantModifier(
+            smoothing_strength=smoothing_strength,
+            mappings=EXAONE4_SMOOTHQUANT_MAPPINGS,
+        ),
         GPTQModifier(
             scheme="W8A8",
             targets="Linear",
