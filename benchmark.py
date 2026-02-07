@@ -26,7 +26,6 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 import yaml
 import lm_eval
-from lm_eval.models.vllm_causallms import VLLM
 from transformers import AutoTokenizer
 
 # 벤치마크 설정 파일
@@ -140,6 +139,7 @@ def parse_vllm_info(log_path: str) -> dict:
         "max_num_batched_tokens": None,
         "gpu_kv_cache_tokens": None,
         "max_concurrency": None,
+        "model_load_seconds": None,
     }
 
     try:
@@ -160,6 +160,11 @@ def parse_vllm_info(log_path: str) -> dict:
         match = re.search(r"Maximum concurrency for [\d,]+ tokens per request: ([\d.]+)x", content)
         if match:
             vllm_info["max_concurrency"] = float(match.group(1))
+
+        # 모델 로드 시간 파싱 (예: "Model loading took 2.39 GiB memory and 7.664517 seconds")
+        match = re.search(r"Model loading took .+ and ([\d.]+) seconds", content)
+        if match:
+            vllm_info["model_load_seconds"] = float(match.group(1))
 
     except Exception:
         pass
@@ -210,27 +215,15 @@ def run_benchmark(
 
         total_start = time.time()
 
-        # 모델 로드 시간 측정 (추론 시간과 분리)
-        print(f"Loading model...")
-        model_load_start = time.time()
-        lm = VLLM(
-            pretrained=model_path,
-            tensor_parallel_size=VLLM_SETTINGS["tensor_parallel_size"],
-            gpu_memory_utilization=VLLM_SETTINGS["gpu_memory_utilization"],
-            max_gen_toks=VLLM_SETTINGS["max_gen_toks"],
-            trust_remote_code=VLLM_SETTINGS["trust_remote_code"],
-            enforce_eager=VLLM_SETTINGS["enforce_eager"],
-        )
-        model_load_time = time.time() - model_load_start
-        print(f"Model loaded in {model_load_time:.2f}s")
-
         # 태스크별 개별 실행 (시간 측정을 위해)
+        # 모델 로드 시간은 첫 번째 태스크 완료 후 로그에서 파싱
         all_results = {}
         all_samples = {}
         task_times = {}
         task_tokens = {}
         task_tps = {}  # Tokens Per Second (throughput)
         vllm_info = {}  # vLLM 내부 설정 (KV cache 등)
+        model_load_time = 0.0  # 모델 로드 시간 (첫 태스크에서 분리)
 
         for task_idx, task in enumerate(tasks):
             print(f"\n{'='*60}")
@@ -239,11 +232,11 @@ def run_benchmark(
 
             task_start = time.time()
 
-            # 이미 로드된 모델 재사용 (모델 로드 시간 제외)
             # think_end_token이 model_args에 설정되어 있으면
             # 모델이 <think>...</think>를 출력해도 </think> 이후 내용만 평가에 사용됨
             results = lm_eval.simple_evaluate(
-                model=lm,
+                model="vllm",
+                model_args=model_args,
                 tasks=[task],
                 batch_size="auto",
                 apply_chat_template=True,
@@ -255,6 +248,11 @@ def run_benchmark(
             # 첫 번째 태스크 완료 후 vLLM 정보 파싱 (모델 로드 시 설정된 값)
             if task_idx == 0:
                 vllm_info = parse_vllm_info(log_path)
+                # 모델 로드 시간을 첫 번째 태스크 시간에서 분리
+                if vllm_info.get("model_load_seconds"):
+                    model_load_time = vllm_info["model_load_seconds"]
+                    task_time = task_time - model_load_time  # 순수 추론 시간
+                    print(f"\n[Model Load Time: {model_load_time:.2f}s separated from first task]")
                 if vllm_info.get("max_num_batched_tokens"):
                     print(f"\n[vLLM Info]")
                     print(f"  max_num_batched_tokens: {vllm_info['max_num_batched_tokens']}")
