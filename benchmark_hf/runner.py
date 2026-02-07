@@ -56,7 +56,7 @@ def run_benchmark(
     enable_thinking: bool = False,
     temperature: float = 0.0,
     top_p: float = 1.0,
-    quick: bool = False,
+    quick: int = 0,
 ):
     """HuggingFace 데이터셋 벤치마크 실행"""
 
@@ -75,7 +75,7 @@ def run_benchmark(
     log.info("=" * 60)
     log.info(f"Dataset : {handler.dataset_id}")
     if quick:
-        log.info("Mode    : quick (singledocqa_100~199)")
+        log.info(f"Mode    : quick (singledocqa_000~{quick-1:03d}, {quick}개)")
     elif subset:
         log.info(f"Subset  : {subset}")
     t0 = time.time()

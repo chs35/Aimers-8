@@ -69,13 +69,14 @@ class KoLongRAGHandler(DatasetHandler):
             self._judge = OpenAI()
         return self._judge
 
-    def load(self, subset=None, split=None, max_samples=None, quick=False):
+    def load(self, subset=None, split=None, max_samples=None, quick=0):
         ds = load_dataset(self.dataset_id, split=split or "test")
         if quick:
+            n = quick
             ds = ds.filter(
-                lambda x: x["task"] == "singledocQA"
+                lambda x, _n=n: x["task"] == "singledocQA"
                 and x["id"].startswith("singledocqa_")
-                and 100 <= int(x["id"].split("_")[1]) <= 199
+                and int(x["id"].split("_")[1]) < _n
             )
         elif subset in ("singledocQA", "multidocQA"):
             ds = ds.filter(lambda x: x["task"] == subset)

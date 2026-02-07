@@ -28,6 +28,7 @@ def main():
   python script.py -m models/EXAONE-4.0-1.2B --subset singledocQA
   python script.py -m models/EXAONE-4.0-1.2B --max-samples 50
   python script.py -m models/EXAONE-4.0-1.2B --quick
+  python script.py -m models/EXAONE-4.0-1.2B --quick 50
 """,
     )
     parser.add_argument(
@@ -59,8 +60,8 @@ def main():
         help="enable_thinking 활성화",
     )
     parser.add_argument(
-        "--quick", action="store_true",
-        help="singledocQA 100~199번만 평가 (100개, 빠른 검증용)",
+        "--quick", nargs="?", type=int, const=100, default=None, metavar="N",
+        help="singledocQA 00~N-1번 평가 (미지정 시 100개, 빠른 검증용)",
     )
     args = parser.parse_args()
 
@@ -74,7 +75,7 @@ def main():
         enable_thinking=args.thinking,
         temperature=args.temperature,
         top_p=args.top_p,
-        quick=args.quick,
+        quick=args.quick if args.quick is not None else 0,
     )
 
 
