@@ -118,6 +118,8 @@ def build_model_args(model_path: str, enable_thinking: bool = False) -> str:
         # enable_thinking: chat template에 전달 (False면 thinking 비활성화)
         f"enable_thinking={str(enable_thinking).lower()}",
     ]
+    if VLLM_SETTINGS.get("kv_cache_dtype"):
+        args.append(f"kv_cache_dtype={VLLM_SETTINGS['kv_cache_dtype']}")
     return ",".join(args)
 
 
@@ -505,11 +507,19 @@ def main():
         action="store_false",
         help="vLLM enforce_eager=False (대회 기본 설정에 더 근접, compile/cudagraph 사용)",
     )
+    parser.add_argument(
+        "--kv-cache-dtype",
+        type=str,
+        default=None,
+        help="KV cache dtype (예: fp8_e5m2). 미지정 시 vLLM 기본값(auto) 사용",
+    )
     parser.set_defaults(enforce_eager=VLLM_SETTINGS["enforce_eager"])
     args = parser.parse_args()
 
     # CLI 옵션으로 vLLM 설정 override
     VLLM_SETTINGS["enforce_eager"] = bool(args.enforce_eager)
+    if args.kv_cache_dtype:
+        VLLM_SETTINGS["kv_cache_dtype"] = args.kv_cache_dtype
 
     benchmarks = load_benchmarks()
     categories = get_categories(benchmarks)
