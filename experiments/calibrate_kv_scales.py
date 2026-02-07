@@ -189,7 +189,12 @@ def main():
     parser.add_argument(
         "--model-path", type=str,
         default="LGAI-EXAONE/EXAONE-4.0-1.2B",
-        help="원본 모델 경로",
+        help="캘리브레이션용 모델 경로 (HF ID 또는 로컬)",
+    )
+    parser.add_argument(
+        "--source-path", type=str,
+        default="models/EXAONE-4.0-1.2B",
+        help="복사할 로컬 모델 디렉토리",
     )
     parser.add_argument(
         "--output-path", type=str,
@@ -217,7 +222,7 @@ def main():
     )
 
     inject_scales(
-        model_path=args.model_path,
+        model_path=args.source_path,
         output_path=args.output_path,
         k_scales=k_scales,
         v_scales=v_scales,
