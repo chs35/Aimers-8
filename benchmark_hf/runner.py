@@ -71,6 +71,7 @@ def run_benchmark(
     temperature: float = 0.0,
     top_p: float = 1.0,
     quick: int = 0,
+    skip_judge: bool = False,
 ):
     """HuggingFace 데이터셋 벤치마크 실행"""
 
@@ -167,13 +168,17 @@ def run_benchmark(
     infer_time = time.time() - infer_start
     log.info(f"  inference done in {infer_time:.1f}s")
 
-    # ── 평가 (GPT-4o judge) ──
+    # ── 결과 수집 ──
     total = len(ds)
-    log.info(f"Evaluating with GPT-4o judge ({total} samples) ...")
     results = []
     correct_count = 0
     total_output_tokens = 0
     judge_errors = 0
+
+    if skip_judge:
+        log.info(f"Collecting results ({total} samples, judge skipped) ...")
+    else:
+        log.info(f"Evaluating with GPT-4o judge ({total} samples) ...")
 
     for i, (sample, output) in enumerate(zip(ds, outputs)):
         generated = output.outputs[0].text
@@ -183,14 +188,18 @@ def run_benchmark(
         n_tokens = len(output.outputs[0].token_ids)
         total_output_tokens += n_tokens
 
-        eval_result = handler.evaluate(sample, generated)
-        if eval_result["correct"]:
-            correct_count += 1
-        judge_res = eval_result.get("judge_result", {})
-        if "error" in judge_res or "parse_error" in judge_res:
-            judge_errors += 1
-
         ref = handler.get_reference(sample)
+
+        if skip_judge:
+            eval_result = {"correct": None, "judge_result": {}}
+        else:
+            eval_result = handler.evaluate(sample, generated)
+            if eval_result["correct"]:
+                correct_count += 1
+            judge_res = eval_result.get("judge_result", {})
+            if "error" in judge_res or "parse_error" in judge_res:
+                judge_errors += 1
+
         results.append({
             "idx": i,
             "reference": ref,
@@ -199,7 +208,7 @@ def run_benchmark(
             **eval_result,
         })
 
-    accuracy = correct_count / len(results) if results else 0.0
+    accuracy = correct_count / len(results) if results and not skip_judge else 0.0
     tps = total_output_tokens / infer_time if infer_time > 0 else 0.0
 
     # ── 결과 출력 ──
@@ -212,9 +221,12 @@ def run_benchmark(
     )
     log.info(f"  Model        : {model_path}")
     log.info(f"  Samples      : {len(results)}")
-    log.info(f"  Accuracy     : {accuracy:.4f} ({correct_count}/{len(results)})")
-    if judge_errors:
-        log.info(f"  Judge Errors : {judge_errors}")
+    if not skip_judge:
+        log.info(f"  Accuracy     : {accuracy:.4f} ({correct_count}/{len(results)})")
+        if judge_errors:
+            log.info(f"  Judge Errors : {judge_errors}")
+    else:
+        log.info("  Judge        : skipped")
     log.info(f"  Output Tokens: {total_output_tokens}")
     log.info(f"  Inference    : {infer_time:.2f}s")
     log.info(f"  TPS          : {tps:.2f} tokens/s")

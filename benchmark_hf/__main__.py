@@ -63,6 +63,10 @@ def main():
         "--quick", nargs="?", type=int, const=100, default=None, metavar="N",
         help="singledocQA 00~N-1번 평가 (미지정 시 100개, 빠른 검증용)",
     )
+    parser.add_argument(
+        "--no-judge", action="store_true",
+        help="GPT-4o judge 평가 스킵 (추론 결과만 저장)",
+    )
     args = parser.parse_args()
 
     run_benchmark(
@@ -76,6 +80,7 @@ def main():
         temperature=args.temperature,
         top_p=args.top_p,
         quick=args.quick if args.quick is not None else 0,
+        skip_judge=args.no_judge,
     )
 
 
