@@ -1,105 +1,109 @@
 """
-AWQ INT4 양자화 스크립트 - Marlin 커널 지원
-AutoAWQ 사용, vLLM에서 awq_marlin으로 로드
+W4A16 INT4 양자화 스크립트 - GPTQ 기반
+llmcompressor 사용 (대회 환경 호환)
+vLLM에서 Marlin 커널로 자동 로드
 Manta 1M 데이터셋으로 캘리브레이션
 """
 import argparse
 from pathlib import Path
 
-from awq import AutoAWQForCausalLM
-from transformers import AutoTokenizer
 from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from llmcompressor import oneshot
+from llmcompressor.modifiers.quantization import GPTQModifier
 
 
-def prepare_calibration_data(tokenizer, num_samples=512, max_length=2048):
+def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048):
     """Manta 1M 데이터셋에서 캘리브레이션 데이터 준비"""
-    # Manta 1M 데이터셋 로드
     ds = load_dataset(
         "LGAI-EXAONE/MANTA-1M",
         split=f"train[:{num_samples}]"
     )
     ds = ds.shuffle(seed=42)
 
-    calibration_data = []
-    for example in ds:
+    def process_and_tokenize(example):
         text = example.get("text") or example.get("content") or str(example)
-        # 토큰화하여 max_length에 맞게 자르기
-        tokens = tokenizer.encode(text, add_special_tokens=False)
-        if len(tokens) > max_length:
-            tokens = tokens[:max_length]
-        # 다시 텍스트로 디코딩
-        text = tokenizer.decode(tokens)
-        if len(text.strip()) > 0:
-            calibration_data.append(text)
+        return tokenizer(
+            text,
+            padding=False,
+            max_length=max_length,
+            truncation=True,
+            add_special_tokens=False
+        )
 
-    print(f"Prepared {len(calibration_data)} calibration samples from MANTA-1M dataset")
-    return calibration_data
+    ds = ds.map(process_and_tokenize, remove_columns=ds.column_names)
+    print(f"Prepared {len(ds)} calibration samples from MANTA-1M dataset")
+    return ds
 
 
-def quantize_awq(
+def quantize_w4a16(
     model_path: str,
     output_path: str,
     num_samples: int = 512,
     max_length: int = 2048,
     group_size: int = 128,
-    use_marlin: bool = True,
+    symmetric: bool = True,
 ):
-    """AWQ INT4 양자화 실행"""
+    """W4A16 INT4 양자화 실행 (GPTQ 기반)"""
 
     print(f"Model: {model_path}")
     print(f"Output: {output_path}")
     print(f"Calibration samples: {num_samples}")
     print(f"Max length: {max_length}")
     print(f"Group size: {group_size}")
-    print(f"Marlin format: {use_marlin}")
+    print(f"Symmetric: {symmetric}")
     print("=" * 60)
 
     # 토크나이저 로드
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
+    # 모델 로드
+    print("Loading model...")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype="auto",
+        device_map="auto",
+        trust_remote_code=True,
+    )
+
     # 캘리브레이션 데이터 준비
     print("Preparing calibration data from MANTA-1M...")
-    calibration_data = prepare_calibration_data(
+    ds = prepare_calibration_dataset(
         tokenizer,
         num_samples=num_samples,
         max_length=max_length
     )
 
-    # 모델 로드
-    print("Loading model for AWQ quantization...")
-    model = AutoAWQForCausalLM.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-        safetensors=True,
+    # W4A16 레시피 (GPTQ 기반 INT4 양자화)
+    # Marlin 커널 호환을 위해 symmetric=True 권장
+    scheme = "W4A16" if symmetric else "W4A16_ASYM"
+
+    recipe = GPTQModifier(
+        targets="Linear",
+        scheme=scheme,
+        ignore=["lm_head"],
     )
 
-    # AWQ 양자화 설정
-    # Marlin 커널 사용 시 zero_point=False 필수
-    quant_config = {
-        "zero_point": not use_marlin,  # Marlin은 zero_point=False
-        "q_group_size": group_size,
-        "w_bit": 4,
-        "version": "Marlin" if use_marlin else "GEMM",
-    }
-
-    print(f"Quantization config: {quant_config}")
-    print("Running AWQ INT4 quantization...")
+    print(f"Quantization scheme: {scheme}")
+    print("Running W4A16 INT4 quantization (GPTQ)...")
 
     # 양자화 실행
-    model.quantize(
-        tokenizer,
-        quant_config=quant_config,
-        calib_data=calibration_data,
+    oneshot(
+        model=model,
+        dataset=ds,
+        recipe=recipe,
+        max_seq_length=max_length,
+        num_calibration_samples=num_samples,
+        save_compressed=True,
+        output_dir=output_path,
     )
 
-    # 모델 저장
-    print(f"Saving quantized model to {output_path}...")
-    model.save_quantized(output_path, safetensors=True)
+    # 토크나이저 저장
     tokenizer.save_pretrained(output_path)
 
     print("=" * 60)
-    print(f"AWQ INT4 quantization complete: {output_path}")
+    print(f"W4A16 INT4 quantization complete: {output_path}")
 
     # 모델 크기 비교
     original_size = sum(f.stat().st_size for f in Path(model_path).glob("*.safetensors"))
@@ -111,15 +115,13 @@ def quantize_awq(
         print(f"Compression ratio: {original_size / quantized_size:.2f}x")
 
     print("\n[vLLM 사용법]")
-    print(f"  python -m vllm.entrypoints.openai.api_server \\")
-    print(f"    --model {output_path} \\")
-    print(f"    --quantization awq_marlin \\")
-    print(f"    --trust-remote-code")
+    print("  vLLM이 자동으로 Marlin 커널 사용")
+    print(f"  python benchmark.py gsm8k --model {output_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="AWQ INT4 Quantization with Marlin kernel support"
+        description="W4A16 INT4 Quantization with GPTQ (Marlin kernel compatible)"
     )
     parser.add_argument(
         "--model", "-m",
@@ -131,7 +133,7 @@ def main():
         "--output", "-o",
         type=str,
         default=None,
-        help="Output path (default: {model}-AWQ)"
+        help="Output path (default: {model}-W4A16)"
     )
     parser.add_argument(
         "--num-samples", "-n",
@@ -152,24 +154,24 @@ def main():
         help="Quantization group size (default: 128)"
     )
     parser.add_argument(
-        "--no-marlin",
+        "--asymmetric",
         action="store_true",
-        help="Disable Marlin format (use GEMM instead)"
+        help="Use asymmetric quantization (default: symmetric for Marlin)"
     )
 
     args = parser.parse_args()
 
     # 출력 경로 기본값
     if args.output is None:
-        args.output = f"{args.model}-AWQ"
+        args.output = f"{args.model}-W4A16"
 
-    quantize_awq(
+    quantize_w4a16(
         model_path=args.model,
         output_path=args.output,
         num_samples=args.num_samples,
         max_length=args.max_length,
         group_size=args.group_size,
-        use_marlin=not args.no_marlin,
+        symmetric=not args.asymmetric,
     )
 
 
