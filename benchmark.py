@@ -26,6 +26,7 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 import yaml
 import lm_eval
+from lm_eval.models import get_model
 from transformers import AutoTokenizer
 
 # 벤치마크 설정 파일
@@ -209,16 +210,19 @@ def run_benchmark(
 
         total_start = time.time()
 
-        # 모델 로드 시간 측정 (첫 번째 태스크에서 측정)
+        # 모델 로드 시간 측정 (추론 시간과 분리)
         print(f"Loading model...")
         model_load_start = time.time()
+        lm = get_model("vllm", model_args)
+        model_load_time = time.time() - model_load_start
+        print(f"Model loaded in {model_load_time:.2f}s")
 
         # 태스크별 개별 실행 (시간 측정을 위해)
         all_results = {}
         all_samples = {}
         task_times = {}
         task_tokens = {}
-        task_time_per_token = {}
+        task_tps = {}  # Tokens Per Second (throughput)
         vllm_info = {}  # vLLM 내부 설정 (KV cache 등)
 
         for task_idx, task in enumerate(tasks):
@@ -228,11 +232,11 @@ def run_benchmark(
 
             task_start = time.time()
 
+            # 이미 로드된 모델 재사용 (모델 로드 시간 제외)
             # think_end_token이 model_args에 설정되어 있으면
             # 모델이 <think>...</think>를 출력해도 </think> 이후 내용만 평가에 사용됨
             results = lm_eval.simple_evaluate(
-                model="vllm",
-                model_args=model_args,
+                model=lm,
                 tasks=[task],
                 batch_size="auto",
                 apply_chat_template=True,
@@ -275,27 +279,27 @@ def run_benchmark(
             task_times[task] = task_time
             task_tokens[task] = total_output_tokens
 
-            # 토큰당 추론 시간 계산 (ms/token)
-            if total_output_tokens > 0:
-                time_per_token = (task_time * 1000) / total_output_tokens  # ms per token
-                task_time_per_token[task] = time_per_token
+            # TPS (Tokens Per Second) 계산 - batch=auto 환경에서 throughput 측정
+            if task_time > 0:
+                tps = total_output_tokens / task_time  # tokens per second
+                task_tps[task] = tps
             else:
-                task_time_per_token[task] = 0
+                task_tps[task] = 0
 
             print(f"\nTask '{task}' completed:")
             print(f"  Time: {task_time:.2f}s")
             print(f"  Output tokens: {total_output_tokens}")
-            print(f"  Time per token: {task_time_per_token[task]:.2f} ms/token")
+            print(f"  TPS: {task_tps[task]:.2f} tokens/s")
 
         total_time = time.time() - total_start
         total_tokens = sum(task_tokens.values())
         total_inference_time = sum(task_times.values())
 
-        # 전체 토큰당 추론 시간
-        if total_tokens > 0:
-            overall_time_per_token = (total_inference_time * 1000) / total_tokens
+        # 전체 TPS (Tokens Per Second)
+        if total_inference_time > 0:
+            overall_tps = total_tokens / total_inference_time
         else:
-            overall_time_per_token = 0
+            overall_tps = 0
 
         # 최종 결과 출력
         print(f"\n{'='*60}")
@@ -319,12 +323,13 @@ def run_benchmark(
             print(f"  {task}:")
             print(f"    Time: {task_times.get(task, 0):.2f}s")
             print(f"    Tokens: {task_tokens.get(task, 0)}")
-            print(f"    Time/Token: {task_time_per_token.get(task, 0):.2f} ms/token")
+            print(f"    TPS: {task_tps.get(task, 0):.2f} tokens/s")
 
         print(f"\n[Summary]")
+        print(f"  Model load time: {model_load_time:.2f}s")
         print(f"  Total inference time: {total_inference_time:.2f}s")
         print(f"  Total output tokens: {total_tokens}")
-        print(f"  Overall time per token: {overall_time_per_token:.2f} ms/token")
+        print(f"  Overall TPS: {overall_tps:.2f} tokens/s")
         print(f"  Total time (with overhead): {total_time:.2f}s")
 
         # 샘플별 상세 로그 출력 (로그 파일에만 기록)
@@ -392,14 +397,15 @@ def run_benchmark(
             "timestamp": datetime.now().isoformat(),
             "time": {
                 "total_seconds": total_time,
+                "model_load_seconds": model_load_time,
                 "total_inference_seconds": total_inference_time,
                 "total_output_tokens": total_tokens,
-                "overall_ms_per_token": overall_time_per_token,
+                "overall_tps": overall_tps,
                 "per_task": {
                     task: {
                         "seconds": task_times.get(task, 0),
                         "output_tokens": task_tokens.get(task, 0),
-                        "ms_per_token": task_time_per_token.get(task, 0),
+                        "tps": task_tps.get(task, 0),
                     }
                     for task in tasks
                 },
