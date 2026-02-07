@@ -42,6 +42,16 @@ VLLM_SETTINGS = {
     "enforce_eager": False,  # torch.compile segfault 방지
 }
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+PRIMARY_METRIC_PRIORITY = [
+    "exact_match,flexible-extract",
+    "exact_match,strict-match",
+    "acc_norm",
+    "acc",
+    "exact_match",
+]
+
 
 def load_benchmarks() -> dict:
     """benchmark.yaml에서 벤치마크 목록 로드"""
@@ -128,9 +138,26 @@ def count_tokens(tokenizer, text: str) -> int:
     if not text or text == "N/A":
         return 0
     try:
+        # 특수 토큰(BOS/EOS 등) 제외하고 응답 텍스트 토큰 수만 계산
+        return len(tokenizer.encode(text, add_special_tokens=False))
+    except TypeError:
+        # 일부 토크나이저 구현체는 add_special_tokens 인자를 받지 않을 수 있음
         return len(tokenizer.encode(text))
     except:
         return 0
+
+
+def disable_tokenizer_truncation(tokenizer) -> None:
+    """
+    tokenizer.json에 저장된 truncation 설정이 토큰 카운팅을 왜곡하지 않도록 비활성화.
+    (모델 추론 파이프라인이 아니라, 여기서는 로컬 카운팅 tokenizer에만 적용)
+    """
+    try:
+        backend = getattr(tokenizer, "backend_tokenizer", None) or getattr(tokenizer, "_tokenizer", None)
+        if backend is not None and hasattr(backend, "no_truncation"):
+            backend.no_truncation()
+    except Exception:
+        pass
 
 
 def parse_vllm_info(log_path: str) -> dict:
@@ -172,10 +199,163 @@ def parse_vllm_info(log_path: str) -> dict:
     return vllm_info
 
 
+def strip_ansi(text: str) -> str:
+    """ANSI escape 시퀀스 제거"""
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def read_log_delta(log_path: str, start_offset: int) -> str:
+    """start_offset 이후 로그만 읽기"""
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(start_offset)
+            return f.read()
+    except Exception:
+        return ""
+
+
+def parse_generate_metrics_from_log(log_text: str) -> dict:
+    """
+    lm_eval 진행 로그에서 generate 단계 메트릭 추출.
+    - generate_seconds: Processed prompts 진행바의 최종 경과시간(mm:ss)
+    - first_progress_seconds: 첫 번째 non-zero 진행까지의 시간(초)
+    - est_output_tps: 진행바 마지막 output toks/s 추정치
+    - est_input_tps: 진행바 마지막 input toks/s 추정치
+    """
+    metrics = {
+        "generate_seconds": None,
+        "first_progress_seconds": None,
+        "est_output_tps": None,
+        "est_input_tps": None,
+    }
+
+    if not log_text:
+        return metrics
+
+    cleaned = strip_ansi(log_text)
+    lines = [line for line in re.split(r"[\r\n]+", cleaned) if line]
+
+    first_nonzero_seconds = None
+    final_seconds = -1
+    final_output_tps = None
+    final_input_tps = None
+
+    for line in lines:
+        if "Processed prompts:" not in line:
+            continue
+
+        match_time = re.search(r"\[(\d+):(\d+)<", line)
+        if not match_time:
+            continue
+
+        seconds = int(match_time.group(1)) * 60 + int(match_time.group(2))
+        if first_nonzero_seconds is None and seconds > 0:
+            first_nonzero_seconds = seconds
+
+        if seconds >= final_seconds:
+            match_output = re.search(r"output:\s*([0-9]+(?:\.[0-9]+)?)", line)
+            match_input = re.search(r"input:\s*([0-9]+(?:\.[0-9]+)?)", line)
+            final_seconds = seconds
+            if match_output:
+                final_output_tps = float(match_output.group(1))
+            if match_input:
+                final_input_tps = float(match_input.group(1))
+
+    if final_seconds >= 0:
+        metrics["generate_seconds"] = float(final_seconds)
+    if first_nonzero_seconds is not None:
+        metrics["first_progress_seconds"] = float(first_nonzero_seconds)
+    metrics["est_output_tps"] = final_output_tps
+    metrics["est_input_tps"] = final_input_tps
+    return metrics
+
+
+def pick_primary_metric(metrics: dict) -> tuple[str | None, float | None]:
+    """태스크별 대표 metric 선택"""
+    for key in PRIMARY_METRIC_PRIORITY:
+        value = metrics.get(key)
+        if isinstance(value, (int, float)):
+            return key, float(value)
+
+    for key, value in metrics.items():
+        if key == "alias" or key.endswith("_stderr"):
+            continue
+        if isinstance(value, (int, float)):
+            return key, float(value)
+
+    return None, None
+
+
+def summarize_perf(task_metrics: dict[str, dict]) -> dict:
+    """
+    태스크별 대표 metric + 평균 성능 요약.
+    task_metrics: {"gsm8k": {...metric dict...}, ...}
+    """
+    per_task = {}
+    values = []
+
+    for task, metrics in task_metrics.items():
+        metric_name, metric_value = pick_primary_metric(metrics)
+        if metric_name is None or metric_value is None:
+            continue
+        per_task[task] = {
+            "primary_metric": metric_name,
+            "value": metric_value,
+        }
+        values.append(metric_value)
+
+    mean_value = (sum(values) / len(values)) if values else None
+    return {
+        "per_task": per_task,
+        "mean": mean_value,
+    }
+
+
+def load_baseline_summary(result_path: str | None) -> dict | None:
+    """기존 결과 JSON에서 대회 산식 추정에 필요한 기준값 로드"""
+    if not result_path:
+        return None
+
+    path = Path(result_path)
+    if not path.exists():
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    baseline_task_metrics = {}
+    for task_name, task_info in data.get("results", {}).items():
+        if isinstance(task_info, dict):
+            metrics = task_info.get("metrics")
+            if isinstance(metrics, dict):
+                baseline_task_metrics[task_name] = metrics
+
+    time_info = data.get("time", {})
+    generate_seconds = time_info.get("total_generate_seconds")
+    if generate_seconds is None:
+        generate_seconds = time_info.get("total_inference_seconds")
+
+    tokens = time_info.get("total_output_tokens")
+    if tokens is None:
+        tokens = time_info.get("total_output_tokens_estimated")
+
+    return {
+        "path": str(path),
+        "tasks": data.get("tasks", []),
+        "perf": summarize_perf(baseline_task_metrics),
+        "generate_seconds": generate_seconds,
+        "tokens": tokens,
+    }
+
+
 def run_benchmark(
     model_path: str,
     tasks: list[str],
     enable_thinking: bool = False,
+    baseline_result_path: str | None = None,
 ):
     """lm_eval로 vLLM 직접 로딩 벤치마크 실행 (대회 설정과 동일)"""
 
@@ -212,8 +392,10 @@ def run_benchmark(
 
         # 토크나이저 로드 (토큰 수 계산용)
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        disable_tokenizer_truncation(tokenizer)
 
         total_start = time.time()
+        baseline_summary = load_baseline_summary(baseline_result_path)
 
         # 태스크별 개별 실행 (시간 측정을 위해)
         # 모델 로드 시간은 첫 번째 태스크 완료 후 로그에서 파싱
@@ -221,7 +403,12 @@ def run_benchmark(
         all_samples = {}
         task_times = {}
         task_tokens = {}
-        task_tps = {}  # Tokens Per Second (throughput)
+        task_tps = {}  # wall-clock 기준 Tokens Per Second
+        task_generate_seconds = {}  # generate phase만 추정 시간
+        task_generate_tps = {}  # generate-only 기준 Tokens Per Second
+        task_first_progress_seconds = {}  # 첫 토큰 도달 지연 근사
+        task_est_output_tps = {}  # lm_eval 진행바 output toks/s
+        task_est_input_tps = {}  # lm_eval 진행바 input toks/s
         vllm_info = {}  # vLLM 내부 설정 (KV cache 등)
         model_load_time = 0.0  # 모델 로드 시간 (첫 태스크에서 분리)
 
@@ -231,6 +418,7 @@ def run_benchmark(
             print(f"{'='*60}")
 
             task_start = time.time()
+            log_offset_before_task = os.path.getsize(log_path)
 
             # think_end_token이 model_args에 설정되어 있으면
             # 모델이 <think>...</think>를 출력해도 </think> 이후 내용만 평가에 사용됨
@@ -291,20 +479,57 @@ def run_benchmark(
             else:
                 task_tps[task] = 0
 
+            # generate 구간 전용 메트릭 파싱 (대회 산식 정렬용)
+            task_log_chunk = read_log_delta(log_path, log_offset_before_task)
+            parsed_generate = parse_generate_metrics_from_log(task_log_chunk)
+
+            generate_seconds = parsed_generate.get("generate_seconds")
+            if generate_seconds is None or generate_seconds <= 0:
+                generate_seconds = task_time
+            task_generate_seconds[task] = generate_seconds
+
+            if generate_seconds and generate_seconds > 0:
+                task_generate_tps[task] = total_output_tokens / generate_seconds
+            else:
+                task_generate_tps[task] = 0
+
+            task_first_progress_seconds[task] = parsed_generate.get("first_progress_seconds")
+            task_est_output_tps[task] = parsed_generate.get("est_output_tps")
+            task_est_input_tps[task] = parsed_generate.get("est_input_tps")
+
             print(f"\nTask '{task}' completed:")
-            print(f"  Time: {task_time:.2f}s")
+            print(f"  Wall time: {task_time:.2f}s")
+            print(f"  Generate-only time: {generate_seconds:.2f}s")
             print(f"  Output tokens: {total_output_tokens}")
-            print(f"  TPS: {task_tps[task]:.2f} tokens/s")
+            print(f"  Wall TPS: {task_tps[task]:.2f} tokens/s")
+            print(f"  Generate TPS: {task_generate_tps[task]:.2f} tokens/s")
+            if task_est_output_tps[task] is not None:
+                print(f"  vLLM est output TPS: {task_est_output_tps[task]:.2f} tokens/s")
+            if task_first_progress_seconds[task] is not None:
+                print(f"  First progress latency: {task_first_progress_seconds[task]:.2f}s")
 
         total_time = time.time() - total_start
         total_tokens = sum(task_tokens.values())
         total_inference_time = sum(task_times.values())
+        total_generate_time = sum(task_generate_seconds.values())
 
         # 전체 TPS (Tokens Per Second)
         if total_inference_time > 0:
             overall_tps = total_tokens / total_inference_time
         else:
             overall_tps = 0
+
+        if total_generate_time > 0:
+            overall_generate_tps = total_tokens / total_generate_time
+        else:
+            overall_generate_tps = 0
+
+        if total_tokens > 0:
+            seconds_per_token_wall = total_inference_time / total_tokens
+            seconds_per_token_generate = total_generate_time / total_tokens
+        else:
+            seconds_per_token_wall = None
+            seconds_per_token_generate = None
 
         # 최종 결과 출력
         print(f"\n{'='*60}")
@@ -326,15 +551,27 @@ def run_benchmark(
         print(f"\n[Per Task]")
         for task in tasks:
             print(f"  {task}:")
-            print(f"    Time: {task_times.get(task, 0):.2f}s")
+            print(f"    Wall time: {task_times.get(task, 0):.2f}s")
+            print(f"    Generate-only time: {task_generate_seconds.get(task, 0):.2f}s")
             print(f"    Tokens: {task_tokens.get(task, 0)}")
-            print(f"    TPS: {task_tps.get(task, 0):.2f} tokens/s")
+            print(f"    Wall TPS: {task_tps.get(task, 0):.2f} tokens/s")
+            print(f"    Generate TPS: {task_generate_tps.get(task, 0):.2f} tokens/s")
+            if task_est_output_tps.get(task) is not None:
+                print(f"    vLLM est output TPS: {task_est_output_tps[task]:.2f} tokens/s")
+            if task_first_progress_seconds.get(task) is not None:
+                print(f"    First progress latency: {task_first_progress_seconds[task]:.2f}s")
 
         print(f"\n[Summary]")
         print(f"  Model load time: {model_load_time:.2f}s")
-        print(f"  Total inference time: {total_inference_time:.2f}s")
+        print(f"  Total wall inference time: {total_inference_time:.2f}s")
+        print(f"  Total generate-only time: {total_generate_time:.2f}s")
         print(f"  Total output tokens: {total_tokens}")
-        print(f"  Overall TPS: {overall_tps:.2f} tokens/s")
+        print(f"  Overall wall TPS: {overall_tps:.2f} tokens/s")
+        print(f"  Overall generate TPS: {overall_generate_tps:.2f} tokens/s")
+        if seconds_per_token_wall is not None:
+            print(f"  Wall seconds/token: {seconds_per_token_wall:.6f}")
+        if seconds_per_token_generate is not None:
+            print(f"  Generate-only seconds/token: {seconds_per_token_generate:.6f}")
         print(f"  Total time (with overhead): {total_time:.2f}s")
 
         # 샘플별 상세 로그 출력 (로그 파일에만 기록)
@@ -403,18 +640,29 @@ def run_benchmark(
             "time": {
                 "total_seconds": total_time,
                 "model_load_seconds": model_load_time,
-                "total_inference_seconds": total_inference_time,
+                "total_inference_seconds": total_inference_time,  # wall-clock
+                "total_generate_seconds": total_generate_time,  # generate phase only
                 "total_output_tokens": total_tokens,
-                "overall_tps": overall_tps,
+                "overall_tps": overall_tps,  # wall-clock
+                "overall_generate_tps": overall_generate_tps,
+                "seconds_per_output_token_wall": seconds_per_token_wall,
+                "seconds_per_output_token_generate_only": seconds_per_token_generate,
                 "per_task": {
                     task: {
-                        "seconds": task_times.get(task, 0),
+                        "seconds": task_times.get(task, 0),  # wall-clock
+                        "generate_seconds": task_generate_seconds.get(task, 0),
+                        "first_progress_seconds": task_first_progress_seconds.get(task),
                         "output_tokens": task_tokens.get(task, 0),
-                        "tps": task_tps.get(task, 0),
+                        "tps": task_tps.get(task, 0),  # wall-clock
+                        "generate_tps": task_generate_tps.get(task, 0),
+                        "est_output_tps": task_est_output_tps.get(task),
+                        "est_input_tps": task_est_input_tps.get(task),
                     }
                     for task in tasks
                 },
             },
+            "performance": summarize_perf(all_results),
+            "contest_estimate": {},
             "results": {},
         }
 
@@ -474,6 +722,86 @@ def run_benchmark(
                 },
             }
 
+        # 대회 산식 추정치 계산 (기준 결과 파일이 있을 때만)
+        contest_estimate = {
+            "enabled": bool(baseline_summary),
+            "baseline_result_path": baseline_summary["path"] if baseline_summary else None,
+            "perf_norm": None,
+            "speed_norm": None,
+            "score": None,
+            "perf_model": None,
+            "perf_base": None,
+            "seconds_per_token_model": seconds_per_token_generate,
+            "seconds_per_token_base": None,
+            "speed_source": "generate_only",
+            "note": (
+                "SpeedNorm/Score는 로컬 추정치이며, 평가서버 비공개 데이터/고정 script.py와 차이가 날 수 있음."
+            ),
+        }
+
+        if baseline_summary:
+            current_perf = output_data["performance"]
+            baseline_perf = baseline_summary.get("perf", {})
+
+            current_perf_tasks = current_perf.get("per_task", {})
+            baseline_perf_tasks = baseline_perf.get("per_task", {})
+            common_tasks = sorted(set(current_perf_tasks.keys()) & set(baseline_perf_tasks.keys()))
+
+            if common_tasks:
+                model_perf_values = [current_perf_tasks[t]["value"] for t in common_tasks]
+                base_perf_values = [baseline_perf_tasks[t]["value"] for t in common_tasks]
+                perf_model = sum(model_perf_values) / len(model_perf_values)
+                perf_base = sum(base_perf_values) / len(base_perf_values)
+            else:
+                perf_model = current_perf.get("mean")
+                perf_base = baseline_perf.get("mean")
+
+            contest_estimate["perf_model"] = perf_model
+            contest_estimate["perf_base"] = perf_base
+            if isinstance(perf_model, (int, float)) and isinstance(perf_base, (int, float)) and perf_base > 0:
+                contest_estimate["perf_norm"] = perf_model / perf_base
+
+            base_generate_seconds = baseline_summary.get("generate_seconds")
+            base_tokens = baseline_summary.get("tokens")
+            if isinstance(base_generate_seconds, (int, float)) and isinstance(base_tokens, (int, float)) and base_tokens > 0:
+                base_seconds_per_token = base_generate_seconds / base_tokens
+                contest_estimate["seconds_per_token_base"] = base_seconds_per_token
+
+                if (
+                    isinstance(seconds_per_token_generate, (int, float))
+                    and seconds_per_token_generate > 0
+                    and base_seconds_per_token > 0
+                ):
+                    contest_estimate["speed_norm"] = 1 - (seconds_per_token_generate / base_seconds_per_token)
+
+            if (
+                isinstance(contest_estimate.get("perf_norm"), (int, float))
+                and isinstance(contest_estimate.get("speed_norm"), (int, float))
+            ):
+                contest_estimate["score"] = max(
+                    0.5 * contest_estimate["perf_norm"] + 0.5 * contest_estimate["speed_norm"],
+                    0.0,
+                )
+
+            print(f"\n{'='*60}")
+            print("CONTEST SCORE ESTIMATE")
+            print(f"{'='*60}")
+            print(f"  Baseline result: {baseline_summary['path']}")
+            if contest_estimate["perf_norm"] is not None:
+                print(f"  PerfNorm: {contest_estimate['perf_norm']:.6f}")
+            else:
+                print("  PerfNorm: N/A")
+            if contest_estimate["speed_norm"] is not None:
+                print(f"  SpeedNorm: {contest_estimate['speed_norm']:.6f}")
+            else:
+                print("  SpeedNorm: N/A")
+            if contest_estimate["score"] is not None:
+                print(f"  Score (estimated): {contest_estimate['score']:.6f}")
+            else:
+                print("  Score (estimated): N/A")
+
+        output_data["contest_estimate"] = contest_estimate
+
         # JSON 저장 (correct/incorrect 배열은 한 줄로 압축)
         json_str = json.dumps(output_data, indent=2, ensure_ascii=False)
 
@@ -524,6 +852,15 @@ def main():
         default=None,
         help="KV cache dtype (예: fp8_e5m2). 미지정 시 vLLM 기본값(auto) 사용",
     )
+    parser.add_argument(
+        "--baseline-result",
+        type=str,
+        default=None,
+        help=(
+            "기준(base) 결과 JSON 경로. 지정 시 대회 산식 "
+            "(PerfNorm/SpeedNorm/Score) 로컬 추정치를 함께 계산"
+        ),
+    )
     parser.set_defaults(enforce_eager=VLLM_SETTINGS["enforce_eager"])
     args = parser.parse_args()
 
@@ -547,6 +884,7 @@ def main():
         args.model,
         tasks,
         enable_thinking=args.thinking,
+        baseline_result_path=args.baseline_result,
     )
 
 

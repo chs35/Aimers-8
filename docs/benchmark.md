@@ -1,197 +1,92 @@
-# Benchmark 사용법
+# Benchmark 가이드 (2026-02 리뉴얼)
 
-EXAONE-4.0 모델 벤치마크 테스트 도구 (대회 평가와 동일한 vLLM 설정)
+이 문서는 `benchmark.py`의 **현행 동작** 기준입니다. 기존 legacy 설명은 폐기했습니다.
 
-## 사용법
+## 1. 목적
+`benchmark.py`는 아래 2가지를 동시에 수행합니다.
 
+1. `lm_eval` 기반 정확도 평가
+2. 속도 측정 2종 분리
+   - `wall` 기준: `simple_evaluate` 전체 구간(로컬 오버헤드 포함)
+   - `generate-only` 기준: `Processed prompts` 진행 로그에서 추출한 생성 구간
+
+대회 산식 추정은 `generate-only` 기준을 사용합니다.
+
+## 2. 실행 방법
+
+### 2.1 기본 실행
 ```bash
-# 카테고리별 실행
+python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B
 python benchmark.py math --model models/EXAONE-4.0-1.2B
-python benchmark.py korean --model models/EXAONE-4.0-1.2B
 python benchmark.py all --model models/EXAONE-4.0-1.2B
-
-# 개별 태스크
-python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B
-python benchmark.py gsm8k,hellaswag,arc_easy --model models/EXAONE-4.0-1.2B
 ```
 
-## 옵션
-
-| 옵션 | 단축 | 기본값 | 설명 |
-|-----|------|-------|------|
-| `--model` | `-m` | (필수) | 모델 경로 |
-| `--thinking` | `-t` | False | enable_thinking 활성화 |
-| `--limit` |  | None | 각 태스크에서 평가할 샘플 수 제한 (smoke test용) |
-
-### enable_thinking 옵션
-
-EXAONE-4.0은 reasoning 모드(`enable_thinking`)를 지원합니다.
-
+### 2.2 FP8 모델 실행
 ```bash
-# thinking 비활성화 (기본값, 대회 설정과 동일)
-python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B
-
-# thinking 활성화
-python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B --thinking
+python benchmark.py gsm8k --model models/EXAONE-4.0-1.2B-FP8
 ```
 
-- `enable_thinking=False` (기본값): 모델이 `<think>` 블록 없이 바로 답변 출력
-- `enable_thinking=True`: 모델이 `<think>...</think>` 블록으로 추론 과정 출력 후 답변
-
-> 대회 평가 서버는 enable_thinking을 명시하지 않으므로 기본값(False)이 적용됩니다.
-
-## vLLM 설정 (대회와 동일)
-
-대회 평가 서버와 동일한 vLLM Serving 옵션:
-
-```
-tensor_parallel_size = 1
-gpu_memory_utilization = 0.85
-batch_size = auto
-max_gen_toks = 16384
-apply_chat_template = true
-```
-
-추가 로컬 테스트 설정 (대회 미명시):
-```
-enforce_eager = true  # CUDA graph/compile 비활성화 (안정성 우선)
-trust_remote_code = true
-```
-
-추가 환경 변수 (로컬 권장):
-```
-TORCHDYNAMO_DISABLE=1  # torchdynamo/torch.compile 경로 segfault 우회 (특히 logprobs/다지선다 태스크)
-```
-
-`benchmark.py`는 기본적으로 `TORCHDYNAMO_DISABLE=1`을 설정합니다. (필요 시 실행 전에 `TORCHDYNAMO_DISABLE=0`으로 override)
-`enforce_eager`는 `--enforce-eager` / `--no-enforce-eager` 옵션으로 변경할 수 있습니다.
-
-## 카테고리 목록
-
-`config/benchmark.yaml`에서 설정:
-
-| 카테고리 | 태스크 |
-|---------|--------|
-| korean | klue_nli, klue_sts, kobest_hellaswag, kobest_copa |
-| english | hellaswag, arc_easy, arc_challenge, winogrande, piqa |
-| math | gsm8k, math |
-| reasoning | mmlu, truthfulqa_mc2 |
-| code | humaneval, mbpp |
-
-## 출력 파일
-
-```
-logs/
-  └── 20250203_120000_EXAONE-4.0-1.2B.log    # 상세 로그 (모델 응답 포함)
-
-results/
-  └── 20250203_120000_EXAONE-4.0-1.2B.json   # 결과 요약
-```
-
-### 로그 파일 내용
-
-각 샘플별 상세 정보가 **로그 파일에만** 기록됩니다 (터미널 출력 없음):
-```
---- Sample 1 ---
-Question: Janet's ducks lay 16 eggs per day...
-Model Response: Janet lays 16 eggs per day and eats 3...
-Extracted (strict): ['18']
-Extracted (flexible): ['18']
-Correct Answer: #### 18
-```
-
-- `Extracted (strict)`: 엄격한 정답 매칭 필터 결과
-- `Extracted (flexible)`: 유연한 정답 추출 필터 결과
-
-### JSON 결과 구조
-
-```json
-{
-  "run_name": "20250203_120000_EXAONE-4.0-1.2B",
-  "model_path": "models/EXAONE-4.0-1.2B",
-  "tasks": ["gsm8k"],
-  "enable_thinking": false,
-  "vllm_settings": {
-    "tensor_parallel_size": 1,
-    "gpu_memory_utilization": 0.85,
-    "max_gen_toks": 16384,
-    "trust_remote_code": true,
-    "enforce_eager": true
-  },
-  "model_args": "pretrained=models/EXAONE-4.0-1.2B,...",
-  "timestamp": "2025-02-03T12:00:00",
-  "time": {
-    "total_seconds": 620.0,
-    "total_inference_seconds": 580.0,
-    "total_output_tokens": 125000,
-    "overall_ms_per_token": 4.64,
-    "per_task": {
-      "gsm8k": {
-        "seconds": 580.0,
-        "output_tokens": 125000,
-        "ms_per_token": 4.64,
-        "batch_size": "auto"
-      }
-    }
-  },
-  "results": {
-    "gsm8k": {
-      "enable_thinking": false,
-      "metrics": {
-        "exact_match,strict-match": 0.65,
-        "exact_match,strict-match_stderr": 0.012,
-        "exact_match,flexible-extract": 0.68,
-        "exact_match,flexible-extract_stderr": 0.011
-      },
-      "num_samples": 1319,
-      "strict_match": {
-        "correct": [2, 3, 6, 7, ...],
-        "incorrect": [1, 4, 5, 8, ...]
-      },
-      "flexible_extract": {
-        "correct": [1, 2, 3, 6, 7, ...],
-        "incorrect": [4, 5, 8, ...]
-      }
-    }
-  }
-}
-```
-
-- `enable_thinking`: thinking 모드 활성화 여부 (전체 및 태스크별)
-- `model_args`: vLLM에 전달된 전체 모델 인자
-- `batch_size`: 태스크별 배치 크기 (auto면 동적 결정)
-- `num_samples`: 실제 평가 샘플 수 (중복 제거)
-- `strict_match`: 엄격한 정답 매칭 결과
-  - `correct`: 정답 샘플 번호 목록 (1부터 시작)
-  - `incorrect`: 오답 샘플 번호 목록
-- `flexible_extract`: 유연한 정답 추출 결과
-  - `correct`: 정답 샘플 번호 목록 (1부터 시작)
-  - `incorrect`: 오답 샘플 번호 목록
-- `ms_per_token`: 토큰당 추론 시간 (대회 점수 산정에 사용)
-
-## 문제 해결
-
-### Segfault 발생 시
-
-vLLM(0.14.1) + torch(2.9.x) 조합에서 torchdynamo/torch.compile 경로가 segfault를 유발할 수 있습니다.
-
-- 다지선다/로그우도 기반 태스크(tinyMMLU/mmlu 등)는 `logprobs`를 사용하므로 영향을 크게 받습니다.
-- 로컬에서는 `TORCHDYNAMO_DISABLE=1`로 우회하는 것을 권장합니다. (`benchmark.py` 기본값)
-- 추가로 안정성이 필요하면 `--enforce-eager`를 사용하세요. (속도는 느려질 수 있음)
-
-### tinyMMLU 빠른 테스트 주의
-
-`tinyMMLU`는 tinyBenchmarks의 IRT 기반 aggregate(`acc_norm`)를 사용합니다.
-`lm_eval.simple_evaluate(..., limit=1)`처럼 `limit`을 아주 작게 주면 aggregation 단계에서 `IndexError`가 날 수 있습니다.
-이 경우 `limit` 없이 실행하거나, smoke test는 `vllm`의 `logprobs` 동작 여부만 별도로 확인하세요.
-
-## 대화 모드 (init_chat.py)
-
-벤치마크가 아닌 대화용:
-
+### 2.3 대회 산식 로컬 추정 (baseline 결과와 비교)
 ```bash
-python init_chat.py --model models/EXAONE-4.0-1.2B
+python benchmark.py gsm8k \
+  --model models/EXAONE-4.0-1.2B-FP8 \
+  --baseline-result results/gsm8k-base.json
 ```
 
-- `quit` / `q` - 종료
-- `clear` - 대화 초기화
+## 3. CLI 옵션
+- `tasks` (positional): 카테고리명 또는 태스크명(쉼표 구분)
+- `--model, -m`: 모델 경로
+- `--thinking, -t`: `enable_thinking=True`
+- `--enforce-eager`: `enforce_eager=True`
+- `--no-enforce-eager`: `enforce_eager=False`
+- `--kv-cache-dtype`: 예: `fp8_e5m2`
+- `--baseline-result`: 기준(base) 결과 JSON 경로. 지정 시 `PerfNorm/SpeedNorm/Score` 추정
+
+## 4. 출력 파일
+- 로그: `logs/<timestamp>_<model>.log`
+- 결과: `results/<timestamp>_<model>.json`
+
+## 5. 시간/속도 지표 정의
+
+### 5.1 `wall` 지표
+- `total_inference_seconds`
+- `overall_tps`
+
+특징: 로컬 파이프라인 오버헤드가 포함됩니다.
+
+### 5.2 `generate-only` 지표
+- `total_generate_seconds`
+- `overall_generate_tps`
+- `seconds_per_output_token_generate_only`
+
+특징: 대회 산식 정렬용으로 사용합니다.
+
+## 6. 대회 산식 로컬 추정
+`--baseline-result`를 주면 `contest_estimate`를 계산합니다.
+
+- `PerfNorm = Perf_model / Perf_base`
+- `SpeedNorm = 1 - ((Time/Tokens)_model / (Time/Tokens)_base)`
+- `Score = max(0.5 * PerfNorm + 0.5 * SpeedNorm, 0)`
+
+주의:
+- 로컬 추정치는 **비공개 평가셋 + 운영진 고정 script.py**와 다를 수 있습니다.
+- 따라서 제출 점수와 1:1 일치를 보장하지 않습니다.
+
+## 7. 결과 JSON 핵심 필드
+- `time.total_inference_seconds`: wall 기준 총 시간
+- `time.total_generate_seconds`: generate-only 총 시간
+- `time.total_output_tokens`: 출력 토큰 수(응답 텍스트 기준)
+- `time.seconds_per_output_token_generate_only`: 대회 산식 정렬용 핵심 값
+- `performance`: 태스크별 대표 metric + 평균
+- `contest_estimate`: baseline 기준 로컬 추정(`perf_norm`, `speed_norm`, `score`)
+
+## 8. 재현성 권장 프로토콜
+1. base/quantized를 **같은 스크립트/같은 옵션**으로 실행
+2. 각 모델 3회 이상 반복
+3. 비교는 `generate-only` 지표 우선
+4. 최종 판단은 단일 태스크가 아니라 대회 유사 태스크 묶음으로 수행
+
+## 9. 알려진 이슈
+- `TORCHDYNAMO_DISABLE=1`이 기본 설정되어 있습니다.
+- 일부 양자화 모델은 커널 경로에 따라 FP8이 항상 빠르지 않을 수 있습니다.
+- `tokenizer.json`의 truncation 아티팩트는 재현성 리스크이므로, 모델 간 tokenizer 설정 차이를 점검하세요.
