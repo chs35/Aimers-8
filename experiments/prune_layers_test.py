@@ -5,14 +5,11 @@ EXAONE-4.0-1.2B 레이어 프루닝 TPOT 검증 스크립트
 정확도는 떨어지지만, 레이어 수 vs TPOT 관계를 검증하는 것이 목적.
 
 사용법:
-  # 30→24 레이어 (앞 3개 + 뒤 3개 유지, 중간 제거)
+  # 레이어 25,26,27 제거
+  python experiments/prune_layers_test.py --remove 25,26,27
+
+  # 30→24 레이어 (자동 선택)
   python experiments/prune_layers_test.py --keep-layers 24
-
-  # 30→20 레이어
-  python experiments/prune_layers_test.py --keep-layers 20
-
-  # 커스텀 레이어 지정 (유지할 레이어 인덱스)
-  python experiments/prune_layers_test.py --layer-indices 0,1,2,3,4,5,10,15,20,25,26,27,28,29
 """
 
 import argparse
