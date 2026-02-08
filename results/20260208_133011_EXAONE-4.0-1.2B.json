@@ -1,0 +1,48 @@
+{
+  "run_name": "20260208_133011_EXAONE-4.0-1.2B",
+  "model_dir_name": "EXAONE-4.0-1.2B",
+  "model_path": "/workspace/Aimers-8/models/EXAONE-4.0-1.2B",
+  "dataset": "LGAI-EXAONE/Ko-LongRAG",
+  "split": "test",
+  "filters": {
+    "quick_n": 100,
+    "single_only": false,
+    "multi_only": false,
+    "skip_eval": true
+  },
+  "vllm_settings": {
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.85,
+    "batch_size": "auto",
+    "max_gen_toks": 16384,
+    "apply_chat_template": true
+  },
+  "sampling_params": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 16384
+  },
+  "judge": {
+    "mode": "gpt4o_judge",
+    "model": null,
+    "max_retries": null
+  },
+  "timing_runs_seconds": [
+    140.5545366667211
+  ],
+  "perf_model": null,
+  "infer_sec_model": 140.5545366667211,
+  "tok_model": 2294,
+  "tpt_model": 0.06127050421391504,
+  "accuracy_single": null,
+  "accuracy_multi": null,
+  "accuracy_unanswerable": null,
+  "judge_errors": 0,
+  "sample_count": 100,
+  "artifacts": {
+    "result_csv": "results/20260208_133011_EXAONE-4.0-1.2B.csv",
+    "submission_csv": "output/20260208_133011_EXAONE-4.0-1.2B_submission.csv",
+    "canonical_submission_csv": "output/submission.csv"
+  },
+  "timestamp": "2026-02-08T13:30:11.620313+00:00"
+}
