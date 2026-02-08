@@ -6,7 +6,7 @@ hf_quant_config.json이 생성되어 vLLM이 별도 플래그 없이
 자동으로 KV cache FP8을 감지합니다.
 
 설치:
-    pip install "nvidia-modelopt[hf]"
+    pip install "nvidia-modelopt[torch]"
 
 사용 예:
     python experiments/quantize_modelopt_fp8.py \
