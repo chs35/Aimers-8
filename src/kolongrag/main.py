@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import logging
 
+from dotenv import load_dotenv
+
 from src.runtime.logging_capture import setup_cli_logging
+
+load_dotenv()
 
 from .app.runner import run
 from .cli.args import parse_args
