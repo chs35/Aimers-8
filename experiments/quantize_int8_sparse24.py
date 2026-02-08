@@ -1,8 +1,9 @@
 """
-FP8 W8A8 + 2:4 Sparsity (Sparse24) 양자화 스크립트
+INT8 W8A8 + 2:4 Sparsity (Sparse24) 양자화 스크립트
 llmcompressor의 SparseGPTModifier + QuantizationModifier 사용
 - 2:4 구조적 프루닝: 4개 중 2개 가중치를 0으로 (50% sparsity)
-- FP8 (E4M3) 양자화: 남은 가중치와 활성화를 FP8로
+- INT8 W8A8 양자화: 채널별 가중치 + 동적 per-token 활성화 양자화
+- SM89 (L4) 이상 모든 NVIDIA GPU 지원
 - 결합 시 ~4x 압축률
 """
 import argparse
@@ -38,20 +39,20 @@ def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048):
     return ds
 
 
-def quantize_fp8_sparse24(
+def quantize_int8_sparse24(
     model_path: str,
     output_path: str,
     num_samples: int = 512,
     max_length: int = 2048,
-    fp8_enabled: bool = True,
+    int8_enabled: bool = True,
 ):
-    """FP8 W8A8 + 2:4 Sparsity 양자화 실행"""
+    """INT8 W8A8 + 2:4 Sparsity 양자화 실행"""
 
     print(f"Model: {model_path}")
     print(f"Output: {output_path}")
     print(f"Calibration samples: {num_samples}")
     print(f"Max length: {max_length}")
-    print(f"FP8 quantization: {fp8_enabled}")
+    print(f"INT8 quantization: {int8_enabled}")
     print("=" * 60)
 
     # 토크나이저 로드
@@ -75,7 +76,7 @@ def quantize_fp8_sparse24(
         max_length=max_length
     )
 
-    # 레시피 구성: 2:4 Sparsity + FP8 Quantization
+    # 레시피 구성: 2:4 Sparsity + INT8 W8A8 Quantization
     recipe = [
         SparseGPTModifier(
             sparsity=0.5,
@@ -84,16 +85,16 @@ def quantize_fp8_sparse24(
         )
     ]
 
-    if fp8_enabled:
+    if int8_enabled:
         recipe.append(
             QuantizationModifier(
                 targets=["Linear"],
                 ignore=["lm_head"],
-                scheme="FP8_DYNAMIC",
+                scheme="W8A8",
             ),
         )
 
-    mode = "FP8 W8A8 + 2:4 Sparsity" if fp8_enabled else "2:4 Sparsity only"
+    mode = "INT8 W8A8 + 2:4 Sparsity" if int8_enabled else "2:4 Sparsity only"
     print(f"Running {mode} compression...")
 
     # 양자화 + 프루닝 실행
@@ -125,7 +126,7 @@ def quantize_fp8_sparse24(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="FP8 W8A8 + 2:4 Sparsity (Sparse24) with llmcompressor"
+        description="INT8 W8A8 + 2:4 Sparsity (Sparse24) with llmcompressor"
     )
     parser.add_argument(
         "--model", "-m",
@@ -137,7 +138,7 @@ def main():
         "--output", "-o",
         type=str,
         default=None,
-        help="Output path (default: {model}-FP8-Sparse24)"
+        help="Output path (default: {model}-INT8-Sparse24)"
     )
     parser.add_argument(
         "--num-samples", "-n",
@@ -152,24 +153,24 @@ def main():
         help="Max sequence length for calibration (default: 2048)"
     )
     parser.add_argument(
-        "--no-fp8",
+        "--no-int8",
         action="store_true",
-        help="Disable FP8 quantization (2:4 sparsity only)"
+        help="Disable INT8 quantization (2:4 sparsity only)"
     )
 
     args = parser.parse_args()
 
     # 출력 경로 기본값
     if args.output is None:
-        suffix = "Sparse24" if args.no_fp8 else "FP8-Sparse24"
+        suffix = "Sparse24" if args.no_int8 else "INT8-Sparse24"
         args.output = f"{args.model}-{suffix}"
 
-    quantize_fp8_sparse24(
+    quantize_int8_sparse24(
         model_path=args.model,
         output_path=args.output,
         num_samples=args.num_samples,
         max_length=args.max_length,
-        fp8_enabled=not args.no_fp8,
+        int8_enabled=not args.no_int8,
     )
 
 
