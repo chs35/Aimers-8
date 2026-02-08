@@ -4,14 +4,10 @@ import csv
 import json
 import logging
 import os
-import sys
-import threading
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-
-from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
 
 from .handlers import get_handler
 from .utils import VLLM_DEFAULTS, strip_thinking
@@ -20,49 +16,83 @@ log = logging.getLogger("kolongrag")
 
 
 def _setup_logging(run_name: str):
-    """kolongrag 로거 + OS-level stderr tee (subprocess 로그 캡처)"""
+    """kolongrag 로거 + vLLM subprocess 로그를 같은 파일에 기록"""
     if log.handlers:
         return
 
-    log.setLevel(logging.DEBUG)
-    log.propagate = False
+    os.makedirs("logs", exist_ok=True)
+    log_path = os.path.abspath(f"logs/{run_name}.log")
 
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
     )
 
-    # 콘솔: INFO 이상
-    console = logging.StreamHandler(stream=sys.__stderr__)
+    # kolongrag 로거: 콘솔(INFO) + 파일(DEBUG)
+    log.setLevel(logging.DEBUG)
+    log.propagate = False
+
+    console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(fmt)
     log.addHandler(console)
 
-    # 파일: DEBUG 전부
-    os.makedirs("logs", exist_ok=True)
-    log_path = f"logs/{run_name}.log"
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
     log.addHandler(fh)
 
-    # OS-level stderr redirect — vLLM subprocess(EngineCore) 출력 캡처
-    log_fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
-    original_stderr_fd = os.dup(2)  # 원본 stderr 보존
-    pipe_r, pipe_w = os.pipe()
-    os.dup2(pipe_w, 2)  # fd 2(stderr)를 pipe write 쪽으로 교체
-    os.close(pipe_w)
+    # vLLM 로거: 같은 파일에 기록 (parent process)
+    vllm_fh = logging.FileHandler(log_path, encoding="utf-8")
+    vllm_fh.setLevel(logging.DEBUG)
+    vllm_fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s — %(message)s", datefmt="%H:%M:%S"
+    )
+    vllm_fh.setFormatter(vllm_fmt)
+    logging.getLogger("vllm").addHandler(vllm_fh)
 
-    def _tee_thread():
-        """pipe에서 읽어서 원본 stderr + 로그 파일에 동시 기록"""
-        with os.fdopen(pipe_r, "r", errors="replace") as reader:
-            for line in reader:
-                os.write(original_stderr_fd, line.encode("utf-8", errors="replace"))
-                os.write(log_fd, line.encode("utf-8", errors="replace"))
+    # vLLM subprocess(EngineCore) 로그도 같은 파일에 기록하도록
+    # VLLM_LOGGING_CONFIG_PATH 환경변수 설정
+    # → subprocess가 시작될 때 이 config를 읽어 FileHandler를 설정함
+    vllm_log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "vllm": {
+                "class": "vllm.logging_utils.NewLineFormatter",
+                "datefmt": "%m-%d %H:%M:%S",
+                "format": "%(levelname)s %(asctime)s %(filename)s:%(lineno)d] %(message)s",
+            }
+        },
+        "handlers": {
+            "file": {
+                "class": "logging.FileHandler",
+                "level": "DEBUG",
+                "formatter": "vllm",
+                "filename": log_path,
+                "encoding": "utf-8",
+            },
+            "console": {
+                "class": "logging.StreamHandler",
+                "level": "INFO",
+                "formatter": "vllm",
+                "stream": "ext://sys.stderr",
+            },
+        },
+        "loggers": {
+            "vllm": {
+                "handlers": ["file", "console"],
+                "level": "DEBUG",
+                "propagate": False,
+            }
+        },
+    }
 
-    t = threading.Thread(target=_tee_thread, daemon=True)
-    t.start()
-
-    log.info(f"Log file: {log_path}")
+    config_path = os.path.join(
+        tempfile.gettempdir(), f"vllm_logging_{os.getpid()}.json"
+    )
+    with open(config_path, "w") as f:
+        json.dump(vllm_log_config, f)
+    os.environ["VLLM_LOGGING_CONFIG_PATH"] = config_path
 
     log.info(f"Log file: {log_path}")
 
@@ -86,7 +116,11 @@ def run_benchmark(
     model_name = Path(model_path).name
     run_name = f"kolongrag_{timestamp}_{model_name}"
 
-    _setup_logging(run_name)
+    _setup_logging(run_name)  # VLLM_LOGGING_CONFIG_PATH 설정됨
+
+    # vLLM은 import 시 logging을 설정하므로 _setup_logging 이후에 import
+    from transformers import AutoTokenizer
+    from vllm import LLM, SamplingParams
 
     os.makedirs("results", exist_ok=True)
 
