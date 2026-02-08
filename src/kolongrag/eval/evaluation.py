@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .answer_text import extract_short_answer, is_unanswerable_reference
 from .judge import OpenAIJudge
 from .types import EvalRecord
+
+logger = logging.getLogger(__name__)
 
 
 def build_eval_records(
@@ -38,6 +41,7 @@ def build_eval_records(
                 judge_short = judge_eval.judge_short
                 is_correct = judge_eval.is_correct
             except Exception:
+                logger.exception("Judge evaluation failed for idx=%d id=%s", idx, sample.get("id", ""))
                 judge_errors += 1
                 judge_long = "error"
                 judge_short = "error"

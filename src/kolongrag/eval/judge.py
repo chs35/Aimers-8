@@ -30,7 +30,14 @@ def _strip_code_fence(text: str) -> str:
 
 def parse_judge_response(raw: str) -> JudgeEval:
     cleaned = _strip_code_fence(raw)
-    obj = ast.literal_eval(cleaned)
+    # ast.literal_eval이 직접 되면 사용, 아니면 {} 블록 추출 시도
+    try:
+        obj = ast.literal_eval(cleaned)
+    except (ValueError, SyntaxError):
+        m = re.search(r"\{[^}]+\}", cleaned)
+        if m is None:
+            raise JudgeParseError(f"no dict found in judge output: {cleaned!r}")
+        obj = ast.literal_eval(m.group())
     if not isinstance(obj, dict):
         raise JudgeParseError("judge output is not a dictionary")
 
@@ -79,11 +86,12 @@ class OpenAIJudge:
             logger.debug("Judge cache hit")
             return self.cache[key]
 
-        user_prompt = self.user_template.format(
-            question=question,
-            answer=answer,
-            long_ans=long_ans,
-            short_ans=short_ans,
+        user_prompt = (
+            self.user_template
+            .replace("{question}", question)
+            .replace("{answer}", answer)
+            .replace("{long_ans}", long_ans)
+            .replace("{short_ans}", short_ans)
         )
         last_error: Exception | None = None
         for i in range(self.max_retries):
