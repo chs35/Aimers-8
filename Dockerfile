@@ -1,24 +1,22 @@
-# EXAONE-4.0-1.2B 경량화 해커톤 평가 서버 환경
-# OS: Ubuntu 22.04.5 LTS, CUDA 12.8, Python 3.11.14
+# EXAONE-4.0-1.2B hackathon evaluation-like environment
+# Target: Ubuntu 22.04.x + CUDA 12.8 + Python 3.11.14 + vLLM 0.14.1 + torch 2.9.0+cu128
 
 FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
 
-# 환경 변수 설정
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Asia/Seoul
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+ARG PYTHON_VERSION=3.11.14
 
-# 시스템 패키지 설치
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    python3.11 \
-    python3.11-distutils \
-    python3-pip \
-    python3.11-dev \
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Seoul \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# README 기준 시스템 패키지 + Python 3.11.14 소스 빌드 의존성
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     git-lfs \
+    openssh-server \
     ninja-build \
     libomp-dev \
     libblas3 \
@@ -33,31 +31,59 @@ RUN apt-get update && apt-get install -y \
     cmake \
     tzdata \
     libxcb1 \
-    openssh-server \
+    xz-utils \
+    zlib1g-dev \
+    libssl-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libffi-dev \
+    liblzma-dev \
+    tk-dev \
+    uuid-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# SSH 설정
-RUN mkdir -p /var/run/sshd ~/.ssh && \
-    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && \
-    echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config && \
-    echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config && \
-    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEqD9Pih5Cae023XyG+wgRV6WIrSybg0Y545TijJr8P junseok0913@DESKTOP-VJH6PBH' > ~/.ssh/authorized_keys && \
-    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHfpMq5LJbRweQEFLAOPtX9JZ4SvgWiYM+YniYKL+vvT junseok0913@kakao.com' >> ~/.ssh/authorized_keys && \
-    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB/yvwiEQyuR2mW5mBo/GluXW9MqZEhwIlQS/I9BnDPr hs040305@naver.com' >> ~/.ssh/authorized_keys && \
-    chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+# SSH 설정 복원
+RUN mkdir -p /var/run/sshd /root/.ssh \
+    && printf '%s\n' \
+        'PermitRootLogin yes' \
+        'PasswordAuthentication no' \
+        'PubkeyAuthentication yes' >> /etc/ssh/sshd_config \
+    && printf '%s\n' \
+        'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFEqD9Pih5Cae023XyG+wgRV6WIrSybg0Y545TijJr8P junseok0913@DESKTOP-VJH6PBH' \
+        'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHfpMq5LJbRweQEFLAOPtX9JZ4SvgWiYM+YniYKL+vvT junseok0913@kakao.com' \
+        'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB/yvwiEQyuR2mW5mBo/GluXW9MqZEhwIlQS/I9BnDPr hs040305@naver.com' \
+        > /root/.ssh/authorized_keys \
+    && chmod 700 /root/.ssh \
+    && chmod 600 /root/.ssh/authorized_keys
 
-# Python 3.11을 기본으로 설정
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+# Python 3.11.14 정확 고정 설치
+RUN cd /tmp \
+    && wget -q https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz \
+    && tar -xzf Python-${PYTHON_VERSION}.tgz \
+    && cd Python-${PYTHON_VERSION} \
+    && ./configure --prefix=/usr/local --with-ensurepip=install \
+    && make -j"$(nproc)" \
+    && make altinstall \
+    && ln -sf /usr/local/bin/python3.11 /usr/local/bin/python \
+    && ln -sf /usr/local/bin/pip3.11 /usr/local/bin/pip \
+    && python --version \
+    && pip --version \
+    && cd / \
+    && rm -rf /tmp/Python-${PYTHON_VERSION} /tmp/Python-${PYTHON_VERSION}.tgz
 
-# pip 업그레이드
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 && \
-    python3.11 -m pip install --upgrade pip
+RUN pip install --upgrade pip setuptools wheel
 
-# PyTorch 설치 (CUDA 12.8)
-RUN pip install torch==2.9.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+# vLLM 0.14.1은 torch==2.9.1을 강제하므로 설치 후 cu128 스택으로 재고정
+RUN pip install vllm==0.14.1 \
+    && pip install --force-reinstall \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://pypi.org/simple \
+        torch==2.9.0+cu128 \
+        torchvision==0.24.0+cu128 \
+        torchaudio==2.9.0+cu128
 
-# Python 패키지 설치
+# README 명시 Python 패키지 고정
 RUN pip install \
     numpy==2.2.6 \
     pandas==2.3.3 \
@@ -83,14 +109,24 @@ RUN pip install \
     immutabledict==4.2.2 \
     torch-c-dlpack-ext==0.1.4
 
-# vLLM 설치
-RUN pip install vllm==0.14.1
+# 핵심 버전 검증
+RUN python - <<'PY'
+import platform
+import torch
+import vllm
 
-# 작업 디렉토리 설정
+assert platform.python_version() == "3.11.14", platform.python_version()
+assert torch.__version__.startswith("2.9.0+cu128"), torch.__version__
+assert torch.version.cuda == "12.8", torch.version.cuda
+assert vllm.__version__ == "0.14.1", vllm.__version__
+
+print("python", platform.python_version())
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("vllm", vllm.__version__)
+PY
+
 WORKDIR /workspace
 
-# Git LFS 초기화
 RUN git lfs install
 
-# 기본 명령어
 CMD ["/bin/bash"]
