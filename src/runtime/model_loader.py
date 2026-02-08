@@ -28,6 +28,7 @@ def load_runtime(
 ) -> RuntimeComponents:
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
+    from vllm.config.compilation import CompilationConfig # segfault A/B testing
 
     logger.debug(
         "Loading tokenizer/model via vLLM. model_path=%s tp=%d gpu_mem_util=%.2f max_tokens=%d",
@@ -46,6 +47,12 @@ def load_runtime(
         tensor_parallel_size=VLLM_TENSOR_PARALLEL_SIZE,
         gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
         trust_remote_code=True,
+        compilation_config=CompilationConfig(
+            inductor_compile_config={
+                "combo_kernels": False,
+                "benchmark_combo_kernel": False,
+            }
+        ),
     )
     sampling_params = SamplingParams(
         temperature=temperature,
