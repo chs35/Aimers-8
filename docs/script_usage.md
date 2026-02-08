@@ -81,7 +81,7 @@ python script.py --model-path EXAONE-4.0-1.2B
 `singledocQA` 100개 quick:
 
 ```bash
-python script.py --model-path EXAONE-4.0-1.2B --quick
+python script.py --model-path EXAONE-4.0-1.2B --quick --skip-eval
 ```
 
 `multidocQA`만 추론(채점 스킵):
