@@ -1,0 +1,65 @@
+single_doc:
+  system: "당신은 도움이 되는 어시스턴트입니다."
+  user_template: |
+    다음 문서를 살펴보고, 질문에 대한 답을 추출하세요.
+    질문에 대한 답만 생성하세요. 답변은 매우 간결해야 합니다.
+    답변을 문서에서 찾을 수 없는 경우, '주어진 정보로 답할 수 없다'로 응답하세요.
+    문서는 "Title"에 따라 정렬된 Wikipedia 문단 목록이며 제목은 다음과 같습니다: {titles}.
+    각 위키피디아 문단은 'Title' 필드와 'Text' 필드를 포함합니다.
+    문서는 다음과 같습니다: {context}
+    질문은 다음과 같습니다: {question}
+
+multi_doc:
+  system: "당신은 도움이 되는 어시스턴트입니다."
+  user_template: |
+    다음 문서를 검토하고 질문에 답하세요.
+    문서는 Wikipedia 문단 목록이며 제목은 다음과 같습니다: {titles}.
+    질문에는 두 가지 유형이 있습니다:
+    예 또는 아니오로 답하거나 두 후보 중에서 선택해야 하는 비교 질문과, 단답형 형태의 일반 질문입니다.
+    문서는 다음과 같습니다: {context}
+    문서에서 필요한 문단을 찾아 질문에 답하세요: {question}
+    일반 질문의 경우 문단에서 정확한 단어를 찾아서 답변해야 합니다.
+    질문에 대한 답만 생성하고 다른 어떤 것도 생성하지 마세요.
+    답변을 문서에서 찾을 수 없는 경우, '주어진 정보로 답할 수 없다'로 응답하세요.
+
+judge:
+  system: |
+    You are an expert evaluator of text answers in Korean.
+    Your task is to compare the content of two Korean answers, a long answer (long_ans) and a short answer (short_ans), with the provided correct answers (Answer), which may contain multiple correct options.
+    Both the long answer and the short answer need to be checked for correctness. The long and short answers do not need to match any of the answers in the Answer list word-for-word but must convey the same key meaning or idea.
+    If either the long or short answer matches any one of the correct answers in the Answer list, it should be considered correct.
+    Focus only on the accuracy of the content and ignore style, tone, or extra information unless it introduces inaccuracies.
+    For both the long and short answers, return only the evaluation result as a Python dictionary object, and ensure the output is formatted as valid Python code.
+    Here are two examples of how to evaluate answers:
+    Example 1:
+    Question: HP는 게임에서 무엇을 의미하나요?
+    Answer: ['체력', '생명력']
+    long_ans: HP는 ’생명력’ 또는 ’체력’을 의미하며, 게임에서 캐릭터의 생존력을 나타내는지표입니다. HP가 줄어들면 캐릭터는 점점 약해지며, 0이 되면 게임에서 탈락하거나 패배할수 있습니다.
+    short_ans: HP는 캐릭터의 체력입니다.
+    Evaluation: {'long_ans': 'correct', 'short_ans': 'correct'}
+    Example 2:
+    Question: 프랑스의 수도는 어디인가요?
+    Answer: ['파리']
+    long_ans: 프랑스의 수도는 파리로, 리옹의 오른쪽 아래에 위치하고, 문화와 예술의 중심지로알려져 있습니다. 에펠탑, 루브르 박물관, 노트르담 대성당 등 유명한 관광지가 위치해있습니다.
+    short_ans: 프랑스의 수도는 리옹입니다.
+    Evaluation: {'long_ans': 'correct', 'short_ans': 'incorrect'}
+    Now, proceed with your evaluation of the following question, answer, and responses, and return only the evaluation as a valid Python dictionary.
+    Ensure the response is a valid Python dictionary object without any additional text.
+  user_template: |
+    Evaluate the following long and short answers based on the provided correct answer.
+    Your goal is to determine if the long and short answers are correct.
+    Return the evaluation result in the form of a Python dictionary: {'long_ans': 'correct 'or 'incorrect ', 'short_ans': 'correct'or 'incorrect'}.
+    Question: {question}
+    Answer: {answer}
+    long_ans: {long_ans}
+    short_ans: {short_ans}
+    Return only the evaluation in the form of a Python dictionary.
+    Do not include any explanation or additional comments.
+
+runtime:
+  judge_model: "gpt-4o"
+  judge_max_retries: 3
+  temperature: 0.0
+  top_p: 1.0
+  results_dir: "results"
+  output_dir: "output"

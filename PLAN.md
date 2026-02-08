@@ -5,7 +5,7 @@
 1. 대회 서버 재현의 핵심은 `고정 Docker 환경 + 고정 vLLM 설정 + 오프라인 배치 추론`이다. (근거: `README.md:164`, `README.md:165`, `README.md:167`, `README.md:168`, `Dockerfile:4`, `Dockerfile:58`, `Dockerfile:87`)
 2. Ko-LongRAG는 로컬 점수 예측용 1순위 벤치마크로 적합하며, `singledocQA/multidocQA/unanswerable`를 분리 측정해야 예측력이 올라간다. (근거: `docs/kolongrag.md:43`, `docs/kolongrag.md:44`, `docs/kolongrag.md:45`, `docs/kolongrag.md:48`)
 3. Ko-LongRAG 공식 프로토콜은 GPT-4o Judge를 쓰지만, 대회 서버는 인터넷 불가이므로 서버 실평가는 자동 메트릭 기반일 가능성이 높다. GPT-4o Judge는 로컬 캘리브레이션 용도로 쓰는 것이 현실적이다. (근거: `docs/kolongrag_examples.md:52`, `docs/kolongrag_examples.md:55`, `README.md:177`)
-4. 현재 저장소의 로컬 로그 수치는 정확한 base 점수 근거로 확정할 수 없으므로, 수치 자체가 아니라 파이프라인 구조 검증 근거로만 사용한다. (근거: `logs/kolongrag_20260208_024321.log:17`, `logs/kolongrag_20260208_024321.log:18`, `logs/kolongrag_20260208_024321.log:130`)
+4. 현재 저장소의 로컬 로그 수치는 정확한 base 점수 근거로 확정할 수 없으므로, 수치 자체가 아니라 파이프라인 구조 검증 근거로만 사용한다.
 5. 본 계획의 실행 출력은 평가산식 재현이 아니라 `perf_model`, `infer_sec_model`, `tok_model`, `tpt_model` 4개 지표로 고정한다.
 
 ## 2. 근거 요약 맵
@@ -20,7 +20,7 @@
 | Ko-LongRAG | 600개, single/multi 각 300, unanswerable 16.6% | `docs/kolongrag.md:43`~`docs/kolongrag.md:48` |
 | Judge | long/short 둘 다 평가하는 GPT-4o Judge 프롬프트 | `docs/kolongrag_examples.md:52`, `docs/kolongrag_examples.md:55`, `docs/kolongrag_examples.md:78`, `docs/kolongrag_examples.md:81`, `docs/kolongrag_examples.md:82` |
 | Docker 동일성 | CUDA 12.8, torch 2.9.0+cu128, vllm 0.14.1 | `Dockerfile:4`, `Dockerfile:58`, `Dockerfile:87` |
-| 로컬 실측 | Ko-LongRAG quick 실행 로그로 vLLM kwargs/sampling/시간 집계 경로를 확인(수치값은 참고용) | `logs/kolongrag_20260208_024321.log:13`, `logs/kolongrag_20260208_024321.log:15`, `logs/kolongrag_20260208_024321.log:17`, `logs/kolongrag_20260208_024321.log:18`, `logs/kolongrag_20260208_024321.log:130` |
+| 로컬 실측 | Ko-LongRAG quick 실행 로그로 vLLM kwargs/sampling/시간 집계 경로를 확인(수치값은 참고용) | |
 
 ## 3. `script.py` 역설계 (Phase 1~5)
 
@@ -265,7 +265,6 @@ class RunMetrics:
 | `--single-only` | bool | `False` | `singledocQA`만 평가 |
 | `--multi-only` | bool | `False` | `multidocQA`만 평가 |
 | `--skip-eval` | bool | `False` | Judge 평가 단계 스킵. 생성/속도 지표만 산출 |
-| `--enforce-eager` | bool | `False` | vLLM `enforce_eager=True`로 실행(WSL/일부 드라이버 환경에서 torch.compile segfault 회피용) |
 
 ### 플래그 조합 규칙
 | 규칙 | 동작 |
@@ -291,9 +290,6 @@ python -m src.kolongrag_eval --model-path models/EXAONE-4.0-1.2B --single-only
 
 # multi만 평가 + 평가 스킵(생성/속도만)
 python -m src.kolongrag_eval --model-path models/EXAONE-4.0-1.2B-FP8 --multi-only --skip-eval
-
-# WSL에서 안정화가 필요하면 eager 모드 사용
-python -m src.kolongrag_eval --model-path models/EXAONE-4.0-1.2B --quick 1 --skip-eval --enforce-eager
 ```
 
 ### 출력 파일 스키마
