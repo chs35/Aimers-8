@@ -1,0 +1,7 @@
+
+TREE_GUARD_MANAGER:
++- RootGuardManager
+| +- GLOBAL_STATE: ___check_global_state()
+| +- TORCH_FUNCTION_MODE_STACK: ___check_torch_function_mode_stack()
+
+Guard latency = 11.59 us

@@ -1,0 +1,2 @@
+timestamp, name, driver_version, temperature.gpu, utilization.gpu [%], memory.used [MiB], memory.total [MiB]
+2026/02/08 21:03:24.183, NVIDIA L4, 565.57.01, 30, 0 %, 1 MiB, 23034 MiB

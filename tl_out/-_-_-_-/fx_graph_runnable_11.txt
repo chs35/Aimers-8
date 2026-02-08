@@ -1,0 +1,150 @@
+s72 = 8192
+
+
+import os
+os.environ['TORCH_LOGS'] = '+dynamic,output_code'
+os.environ['TORCH_TRACE'] = '/workspace/Aimers-8/tmp/torch_trace'
+os.environ['PYTORCH_NVML_BASED_CUDA_CHECK'] = '1'
+os.environ['TORCHINDUCTOR_COMPILE_THREADS'] = '1'
+os.environ['TORCHINDUCTOR_CACHE_DIR'] = '/tmp/torchinductor_root'
+
+import torch
+from torch import tensor, device
+import torch.fx as fx
+from torch._dynamo.testing import rand_strided
+from math import inf
+import torch._inductor.inductor_prims
+
+
+
+import torch._dynamo.config
+import torch._inductor.config
+import torch._functorch.config
+import torch.fx.experimental._config
+import vllm.model_executor.parameter
+torch._dynamo.config.recompile_limit = 16
+torch._dynamo.config.assume_static_by_default = True
+torch._dynamo.config.automatic_dynamic_shapes = False
+torch._dynamo.config.traceable_tensor_subclasses = ['vllm.model_executor.parameter.BasevLLMParameter', 'vllm.model_executor.parameter.ModelWeightParameter', 'vllm.model_executor.parameter._ColumnvLLMParameter', 'vllm.model_executor.parameter.RowvLLMParameter']
+torch._dynamo.config.enable_cpp_symbolic_shape_guards = False
+torch._inductor.config.enable_auto_functionalized_v2 = False
+torch._inductor.config.graph_partition = True
+torch._inductor.config.combo_kernels = True
+torch._inductor.config.benchmark_combo_kernel = True
+torch._inductor.config.compile_threads = 1
+torch._inductor.config.triton.autotune_at_compile_time = True
+torch._functorch.config.functionalize_rng_ops = False
+torch._functorch.config.bundled_autograd_cache = False
+torch._functorch.config.fake_tensor_allow_unsafe_data_ptr_access = True
+torch._functorch.config.unlift_effect_tokens = True
+
+
+
+isolate_fails_code_str = None
+
+
+
+
+# torch version: 2.9.0+cu128
+# torch cuda version: 12.8
+# torch git version: 0fabc3ba44823f257e70ce397d989c8de5e362c1
+
+
+# CUDA Info: 
+# nvcc not found
+# GPU Hardware Info: 
+# NVIDIA L4 : 1 
+
+
+from torch.nn import *
+class Repro(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    
+    
+    def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1, arg5_1, arg6_1, arg7_1):
+        convert_element_type = torch.ops.prims.convert_element_type.default(arg0_1, torch.int64);  arg0_1 = None
+        embedding = torch.ops.aten.embedding.default(arg2_1, convert_element_type);  arg2_1 = convert_element_type = None
+        permute = torch.ops.aten.permute.default(arg3_1, [1, 0]);  arg3_1 = None
+        mm = torch.ops.aten.mm.default(embedding, permute);  permute = None
+        split_with_sizes = torch.ops.aten.split_with_sizes.default(mm, [2048, 512, 512], -1);  mm = None
+        getitem = split_with_sizes[0]
+        getitem_1 = split_with_sizes[1]
+        getitem_2 = split_with_sizes[2];  split_with_sizes = None
+        view = torch.ops.aten.view.default(getitem, [arg1_1, 32, 64]);  getitem = None
+        convert_element_type_3 = torch.ops.prims.convert_element_type.default(view, torch.float32);  view = None
+        pow_1 = torch.ops.aten.pow.Tensor_Scalar(convert_element_type_3, 2)
+        mean = torch.ops.aten.mean.dim(pow_1, [-1], True);  pow_1 = None
+        add_33 = torch.ops.aten.add.Tensor(mean, 1e-05);  mean = None
+        rsqrt = torch.ops.aten.rsqrt.default(add_33);  add_33 = None
+        mul_23 = torch.ops.aten.mul.Tensor(convert_element_type_3, rsqrt);  convert_element_type_3 = rsqrt = None
+        convert_element_type_4 = torch.ops.prims.convert_element_type.default(mul_23, torch.bfloat16);  mul_23 = None
+        mul_28 = torch.ops.aten.mul.Tensor(convert_element_type_4, arg4_1);  convert_element_type_4 = arg4_1 = None
+        view_2 = torch.ops.aten.view.default(getitem_1, [arg1_1, 8, 64]);  getitem_1 = None
+        convert_element_type_5 = torch.ops.prims.convert_element_type.default(view_2, torch.float32);  view_2 = None
+        pow_2 = torch.ops.aten.pow.Tensor_Scalar(convert_element_type_5, 2)
+        mean_1 = torch.ops.aten.mean.dim(pow_2, [-1], True);  pow_2 = None
+        add_73 = torch.ops.aten.add.Tensor(mean_1, 1e-05);  mean_1 = None
+        rsqrt_1 = torch.ops.aten.rsqrt.default(add_73);  add_73 = None
+        mul_49 = torch.ops.aten.mul.Tensor(convert_element_type_5, rsqrt_1);  convert_element_type_5 = rsqrt_1 = None
+        convert_element_type_6 = torch.ops.prims.convert_element_type.default(mul_49, torch.bfloat16);  mul_49 = None
+        mul_54 = torch.ops.aten.mul.Tensor(convert_element_type_6, arg5_1);  convert_element_type_6 = arg5_1 = None
+        index = torch.ops.aten.index.Tensor(arg7_1, [arg6_1]);  arg7_1 = arg6_1 = None
+        split = torch.ops.aten.split.Tensor(index, 32, -1);  index = None
+        getitem_3 = split[0]
+        getitem_4 = split[1];  split = None
+        unsqueeze = torch.ops.aten.unsqueeze.default(getitem_3, -2)
+        unsqueeze_1 = torch.ops.aten.unsqueeze.default(getitem_4, -2)
+        split_1 = torch.ops.aten.split.Tensor(mul_28, 32, -1);  mul_28 = None
+        getitem_5 = split_1[0]
+        getitem_6 = split_1[1];  split_1 = None
+        mul_82 = torch.ops.aten.mul.Tensor(getitem_5, unsqueeze)
+        mul_85 = torch.ops.aten.mul.Tensor(getitem_6, unsqueeze_1)
+        sub_38 = torch.ops.aten.sub.Tensor(mul_82, mul_85);  mul_82 = mul_85 = None
+        mul_90 = torch.ops.aten.mul.Tensor(getitem_6, unsqueeze);  getitem_6 = unsqueeze = None
+        mul_93 = torch.ops.aten.mul.Tensor(getitem_5, unsqueeze_1);  getitem_5 = unsqueeze_1 = None
+        add_152 = torch.ops.aten.add.Tensor(mul_90, mul_93);  mul_90 = mul_93 = None
+        cat = torch.ops.aten.cat.default([sub_38, add_152], -1);  sub_38 = add_152 = None
+        unsqueeze_2 = torch.ops.aten.unsqueeze.default(getitem_3, -2);  getitem_3 = None
+        unsqueeze_3 = torch.ops.aten.unsqueeze.default(getitem_4, -2);  getitem_4 = None
+        split_2 = torch.ops.aten.split.Tensor(mul_54, 32, -1);  mul_54 = None
+        getitem_7 = split_2[0]
+        getitem_8 = split_2[1];  split_2 = None
+        mul_121 = torch.ops.aten.mul.Tensor(getitem_7, unsqueeze_2)
+        mul_124 = torch.ops.aten.mul.Tensor(getitem_8, unsqueeze_3)
+        sub_55 = torch.ops.aten.sub.Tensor(mul_121, mul_124);  mul_121 = mul_124 = None
+        mul_129 = torch.ops.aten.mul.Tensor(getitem_8, unsqueeze_2);  getitem_8 = unsqueeze_2 = None
+        mul_132 = torch.ops.aten.mul.Tensor(getitem_7, unsqueeze_3);  getitem_7 = unsqueeze_3 = None
+        add_214 = torch.ops.aten.add.Tensor(mul_129, mul_132);  mul_129 = mul_132 = None
+        cat_1 = torch.ops.aten.cat.default([sub_55, add_214], -1);  sub_55 = add_214 = None
+        empty = torch.ops.aten.empty.memory_format([arg1_1, 2048], dtype = torch.bfloat16, device = device(type='cuda', index=0), pin_memory = False);  arg1_1 = None
+        view_9 = torch.ops.aten.view.default(empty, [-1, 32, 64]);  empty = None
+        view_11 = torch.ops.aten.view.default(getitem_2, [-1, 8, 64]);  getitem_2 = None
+        return (cat, cat_1, view_11, view_9, embedding)
+        
+def load_args(reader):
+    buf0 = reader.storage(None, 32768, device=device(type='cuda', index=0), dtype_hint=torch.int32)
+    reader.tensor(buf0, (s72,), dtype=torch.int32, is_leaf=True)  # arg0_1
+    reader.symint(8192)  # arg1_1
+    buf1 = reader.storage(None, 419430400, device=device(type='cuda', index=0), dtype_hint=torch.bfloat16)
+    reader.tensor(buf1, (102400, 2048), dtype=torch.bfloat16, is_leaf=True)  # arg2_1
+    buf2 = reader.storage(None, 12582912, device=device(type='cuda', index=0), dtype_hint=torch.bfloat16)
+    reader.tensor(buf2, (3072, 2048), dtype=torch.bfloat16, is_leaf=True)  # arg3_1
+    buf3 = reader.storage(None, 128, device=device(type='cuda', index=0), dtype_hint=torch.bfloat16)
+    reader.tensor(buf3, (64,), dtype=torch.bfloat16, is_leaf=True)  # arg4_1
+    buf4 = reader.storage(None, 128, device=device(type='cuda', index=0), dtype_hint=torch.bfloat16)
+    reader.tensor(buf4, (64,), dtype=torch.bfloat16, is_leaf=True)  # arg5_1
+    buf5 = reader.storage(None, 65536, device=device(type='cuda', index=0), dtype_hint=torch.int64)
+    reader.tensor(buf5, (s72,), dtype=torch.int64, is_leaf=True)  # arg6_1
+    buf6 = reader.storage(None, 8388608, device=device(type='cuda', index=0), dtype_hint=torch.bfloat16)
+    reader.tensor(buf6, (65536, 64), dtype=torch.bfloat16, is_leaf=True)  # arg7_1
+load_args._version = 0
+mod = Repro()
+if __name__ == '__main__':
+    from torch._dynamo.repro.after_aot import run_repro
+    with torch.no_grad():
+        run_repro(mod, load_args, accuracy=False, command='run', save_dir=None, tracing_mode='symbolic', check_str=None)
+        # To run it separately, do 
+        # mod, args = run_repro(mod, load_args, accuracy=False, command='get_args', save_dir=None, tracing_mode='symbolic', check_str=None)
+        # mod(*args)

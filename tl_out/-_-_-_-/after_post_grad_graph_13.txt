@@ -1,0 +1,130 @@
+class <lambda>(torch.nn.Module):
+    def forward(self, arg0_1: "i32[s72][1]cuda:0", arg1_1: "Sym(s72)", arg2_1: "bf16[102400, 2048][2048, 1]cuda:0", arg3_1: "bf16[3072, 2048][2048, 1]cuda:0", arg4_1: "bf16[64][1]cuda:0", arg5_1: "bf16[64][1]cuda:0", arg6_1: "i64[s72][1]cuda:0", arg7_1: "bf16[65536, 64][64, 1]cuda:0"):
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/vocab_parallel_embedding.py:478 in forward_native, code: output_parallel = self.quant_method.embedding(self, masked_input.long())
+        convert_element_type: "i64[s72][1]cuda:0" = torch.ops.prims.convert_element_type.default(arg0_1, torch.int64);  arg0_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/vocab_parallel_embedding.py:72 in embedding, code: return F.embedding(input_, layer.weight)
+        embedding: "bf16[s72, 2048][2048, 1]cuda:0" = torch.ops.aten.embedding.default(arg2_1, convert_element_type);  arg2_1 = convert_element_type = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/utils.py:105 in default_unquantized_gemm, code: return torch.nn.functional.linear(x, weight, bias)
+        permute: "bf16[2048, 3072][1, 2048]cuda:0" = torch.ops.aten.permute.default(arg3_1, [1, 0]);  arg3_1 = None
+        mm: "bf16[s72, 3072][3072, 1]cuda:0" = torch.ops.aten.mm.default(embedding, permute);  permute = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/models/exaone4.py:202 in forward, code: q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        split_with_sizes = torch.ops.aten.split_with_sizes.default(mm, [2048, 512, 512], -1);  mm = None
+        getitem: "bf16[s72, 2048][3072, 1]cuda:0" = split_with_sizes[0]
+        getitem_1: "bf16[s72, 512][3072, 1]cuda:0" = split_with_sizes[1]
+        getitem_2: "bf16[s72, 512][3072, 1]cuda:0" = split_with_sizes[2];  split_with_sizes = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/base.py:129 in forward_static, code: cos_sin = cos_sin_cache.index_select(0, positions)
+        index: "bf16[s72, 64][64, 1]cuda:0" = torch.ops.aten.index.Tensor(arg7_1, [arg6_1]);  arg7_1 = arg6_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/base.py:130 in forward_static, code: cos, sin = cos_sin.chunk(2, dim=-1)
+        split = torch.ops.aten.split.Tensor(index, 32, -1);  index = None
+        getitem_3: "bf16[s72, 32][64, 1]cuda:0" = split[0]
+        getitem_4: "bf16[s72, 32][64, 1]cuda:0" = split[1];  split = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/models/exaone4.py:204 in forward, code: q = q.unflatten(-1, (self.num_heads, self.head_dim))
+        view: "bf16[s72, 32, 64][3072, 64, 1]cuda:0" = torch.ops.aten.reshape.default(getitem, [arg1_1, 32, 64]);  getitem = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:145 in forward_static, code: x = x.to(torch.float32)
+        convert_element_type_3: "f32[s72, 32, 64][2048, 64, 1]cuda:0" = torch.ops.prims.convert_element_type.default(view, torch.float32);  view = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:169 in forward_static, code: variance = x_var.pow(2).mean(dim=-1, keepdim=True)
+        pow_1: "f32[s72, 32, 64][2048, 64, 1]cuda:0" = torch.ops.aten.pow.Tensor_Scalar(convert_element_type_3, 2)
+        mean: "f32[s72, 32, 1][32, 1, 1]cuda:0" = torch.ops.aten.mean.dim(pow_1, [-1], True);  pow_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:171 in forward_static, code: x = x * torch.rsqrt(variance + variance_epsilon)
+        add_33: "f32[s72, 32, 1][32, 1, 1]cuda:0" = torch.ops.aten.add.Tensor(mean, 1e-05);  mean = None
+        rsqrt: "f32[s72, 32, 1][32, 1, 1]cuda:0" = torch.ops.aten.rsqrt.default(add_33);  add_33 = None
+        mul_23: "f32[s72, 32, 64][2048, 64, 1]cuda:0" = torch.ops.aten.mul.Tensor(convert_element_type_3, rsqrt);  convert_element_type_3 = rsqrt = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:172 in forward_static, code: x = x.to(orig_dtype)
+        convert_element_type_4: "bf16[s72, 32, 64][2048, 64, 1]cuda:0" = torch.ops.prims.convert_element_type.default(mul_23, torch.bfloat16);  mul_23 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:174 in forward_static, code: x = x * weight
+        mul_28: "bf16[s72, 32, 64][2048, 64, 1]cuda:0" = torch.ops.aten.mul.Tensor(convert_element_type_4, arg4_1);  convert_element_type_4 = arg4_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:167 in forward_static, code: x1, x2 = torch.chunk(x, 2, dim=-1)
+        split_1 = torch.ops.aten.split.Tensor(mul_28, 32, -1);  mul_28 = None
+        getitem_5: "bf16[s72, 32, 32][2048, 64, 1]cuda:0" = split_1[0]
+        getitem_6: "bf16[s72, 32, 32][2048, 64, 1]cuda:0" = split_1[1];  split_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/models/exaone4.py:207 in forward, code: k = k.unflatten(-1, (self.num_kv_heads, self.head_dim))
+        view_2: "bf16[s72, 8, 64][3072, 64, 1]cuda:0" = torch.ops.aten.reshape.default(getitem_1, [arg1_1, 8, 64]);  getitem_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:145 in forward_static, code: x = x.to(torch.float32)
+        convert_element_type_5: "f32[s72, 8, 64][512, 64, 1]cuda:0" = torch.ops.prims.convert_element_type.default(view_2, torch.float32);  view_2 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:169 in forward_static, code: variance = x_var.pow(2).mean(dim=-1, keepdim=True)
+        pow_2: "f32[s72, 8, 64][512, 64, 1]cuda:0" = torch.ops.aten.pow.Tensor_Scalar(convert_element_type_5, 2)
+        mean_1: "f32[s72, 8, 1][8, 1, 1]cuda:0" = torch.ops.aten.mean.dim(pow_2, [-1], True);  pow_2 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:171 in forward_static, code: x = x * torch.rsqrt(variance + variance_epsilon)
+        add_73: "f32[s72, 8, 1][8, 1, 1]cuda:0" = torch.ops.aten.add.Tensor(mean_1, 1e-05);  mean_1 = None
+        rsqrt_1: "f32[s72, 8, 1][8, 1, 1]cuda:0" = torch.ops.aten.rsqrt.default(add_73);  add_73 = None
+        mul_49: "f32[s72, 8, 64][512, 64, 1]cuda:0" = torch.ops.aten.mul.Tensor(convert_element_type_5, rsqrt_1);  convert_element_type_5 = rsqrt_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:172 in forward_static, code: x = x.to(orig_dtype)
+        convert_element_type_6: "bf16[s72, 8, 64][512, 64, 1]cuda:0" = torch.ops.prims.convert_element_type.default(mul_49, torch.bfloat16);  mul_49 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/layernorm.py:174 in forward_static, code: x = x * weight
+        mul_54: "bf16[s72, 8, 64][512, 64, 1]cuda:0" = torch.ops.aten.mul.Tensor(convert_element_type_6, arg5_1);  convert_element_type_6 = arg5_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:167 in forward_static, code: x1, x2 = torch.chunk(x, 2, dim=-1)
+        split_2 = torch.ops.aten.split.Tensor(mul_54, 32, -1);  mul_54 = None
+        getitem_7: "bf16[s72, 8, 32][512, 64, 1]cuda:0" = split_2[0]
+        getitem_8: "bf16[s72, 8, 32][512, 64, 1]cuda:0" = split_2[1];  split_2 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:163 in forward_static, code: cos = cos.unsqueeze(-2).to(x.dtype)
+        unsqueeze: "bf16[s72, 1, 32][64, 32, 1]cuda:0" = torch.ops.aten.unsqueeze.default(getitem_3, -2)
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:172 in forward_static, code: o1 = x1 * cos - x2 * sin
+        mul_82: "bf16[s72, 32, 32][1024, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_5, unsqueeze)
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:164 in forward_static, code: sin = sin.unsqueeze(-2).to(x.dtype)
+        unsqueeze_1: "bf16[s72, 1, 32][64, 32, 1]cuda:0" = torch.ops.aten.unsqueeze.default(getitem_4, -2)
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:172 in forward_static, code: o1 = x1 * cos - x2 * sin
+        mul_85: "bf16[s72, 32, 32][1024, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_6, unsqueeze_1)
+        sub_38: "bf16[s72, 32, 32][1024, 32, 1]cuda:0" = torch.ops.aten.sub.Tensor(mul_82, mul_85);  mul_82 = mul_85 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:173 in forward_static, code: o2 = x2 * cos + x1 * sin
+        mul_90: "bf16[s72, 32, 32][1024, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_6, unsqueeze);  getitem_6 = unsqueeze = None
+        mul_93: "bf16[s72, 32, 32][1024, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_5, unsqueeze_1);  getitem_5 = unsqueeze_1 = None
+        add_152: "bf16[s72, 32, 32][1024, 32, 1]cuda:0" = torch.ops.aten.add.Tensor(mul_90, mul_93);  mul_90 = mul_93 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:176 in forward_static, code: output = torch.cat((o1, o2), dim=-1)
+        cat: "bf16[s72, 32, 64][2048, 64, 1]cuda:0" = torch.ops.aten.cat.default([sub_38, add_152], -1);  sub_38 = add_152 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:163 in forward_static, code: cos = cos.unsqueeze(-2).to(x.dtype)
+        unsqueeze_2: "bf16[s72, 1, 32][64, 32, 1]cuda:0" = torch.ops.aten.unsqueeze.default(getitem_3, -2);  getitem_3 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:172 in forward_static, code: o1 = x1 * cos - x2 * sin
+        mul_121: "bf16[s72, 8, 32][256, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_7, unsqueeze_2)
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:164 in forward_static, code: sin = sin.unsqueeze(-2).to(x.dtype)
+        unsqueeze_3: "bf16[s72, 1, 32][64, 32, 1]cuda:0" = torch.ops.aten.unsqueeze.default(getitem_4, -2);  getitem_4 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:172 in forward_static, code: o1 = x1 * cos - x2 * sin
+        mul_124: "bf16[s72, 8, 32][256, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_8, unsqueeze_3)
+        sub_55: "bf16[s72, 8, 32][256, 32, 1]cuda:0" = torch.ops.aten.sub.Tensor(mul_121, mul_124);  mul_121 = mul_124 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:173 in forward_static, code: o2 = x2 * cos + x1 * sin
+        mul_129: "bf16[s72, 8, 32][256, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_8, unsqueeze_2);  getitem_8 = unsqueeze_2 = None
+        mul_132: "bf16[s72, 8, 32][256, 32, 1]cuda:0" = torch.ops.aten.mul.Tensor(getitem_7, unsqueeze_3);  getitem_7 = unsqueeze_3 = None
+        add_214: "bf16[s72, 8, 32][256, 32, 1]cuda:0" = torch.ops.aten.add.Tensor(mul_129, mul_132);  mul_129 = mul_132 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/model_executor/layers/rotary_embedding/common.py:176 in forward_static, code: output = torch.cat((o1, o2), dim=-1)
+        cat_1: "bf16[s72, 8, 64][512, 64, 1]cuda:0" = torch.ops.aten.cat.default([sub_55, add_214], -1);  sub_55 = add_214 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/attention/layer.py:377 in forward, code: value = value.view(-1, self.num_kv_heads, self.head_size_v)
+        view_11: "bf16[s72, 8, 64][3072, 64, 1]cuda:0" = torch.ops.aten.reshape.default(getitem_2, [-1, 8, 64]);  getitem_2 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/attention/layer.py:367 in forward, code: output = torch.empty(output_shape, dtype=output_dtype, device=query.device)
+        empty: "bf16[s72, 2048][2048, 1]cuda:0" = torch.ops.aten.empty.memory_format([arg1_1, 2048], dtype = torch.bfloat16, device = device(type='cuda', index=0), pin_memory = False);  arg1_1 = None
+        
+         # File: /usr/local/lib/python3.11/dist-packages/vllm/attention/layer.py:373 in forward, code: output = output.view(-1, self.num_heads, self.head_size_v)
+        view_9: "bf16[s72, 32, 64][2048, 64, 1]cuda:0" = torch.ops.aten.reshape.default(empty, [-1, 32, 64]);  empty = None
+        return (cat, cat_1, view_11, view_9, embedding)
+        

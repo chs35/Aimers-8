@@ -1,0 +1,3 @@
+./tmp/debug/core_pattern.txt
+./tmp/debug/core_bt.txt
+./tmp/debug/core_files.txt

@@ -48,10 +48,7 @@ def load_runtime(
         gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
         trust_remote_code=True,
         compilation_config=CompilationConfig(
-            inductor_compile_config={
-                "combo_kernels": False,
-                "benchmark_combo_kernel": False,
-            }
+            backend="eager"
         ),
     )
     sampling_params = SamplingParams(
