@@ -5,11 +5,14 @@ Static Scaling으로 Activation 스케일링 팩터 고정
 Manta 1M 데이터셋으로 캘리브레이션
 """
 import argparse
+import json
 from pathlib import Path
 
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llmcompressor import oneshot
+from safetensors import safe_open
+from safetensors.torch import save_file
 
 
 # FP8 양자화 레시피 (Static Scaling)
@@ -91,6 +94,128 @@ def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048):
     return ds
 
 
+def fix_tied_weights_after_save(output_path: str):
+    """llmcompressor의 save_compressed가 tie_word_embeddings를 무시하고
+    lm_head.weight를 별도 저장하는 문제를 후처리로 수정.
+
+    embed_tokens.weight와 lm_head.weight가 동일하면 lm_head.weight를 제거하여
+    모델 크기를 ~0.4GB 절약. (98816×2048×2bytes = 386MB)
+    """
+    output_dir = Path(output_path)
+
+    config_path = output_dir / "config.json"
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    if not config.get("tie_word_embeddings", False):
+        print("  tie_word_embeddings=False, skipping tied weight fix")
+        return
+
+    # 단일 safetensors 파일 처리
+    single_file = output_dir / "model.safetensors"
+    index_file = output_dir / "model.safetensors.index.json"
+
+    if single_file.exists():
+        _fix_single_safetensors(single_file)
+    elif index_file.exists():
+        _fix_sharded_safetensors(output_dir, index_file)
+    else:
+        print("  WARNING: No safetensors files found, skipping tied weight fix")
+
+
+def _fix_single_safetensors(filepath: Path):
+    """단일 safetensors 파일에서 중복 lm_head.weight 제거."""
+    with safe_open(str(filepath), framework="pt") as f:
+        keys = list(f.keys())
+        metadata = f.metadata()
+
+    if "lm_head.weight" not in keys:
+        print("  lm_head.weight not found in safetensors, already tied")
+        return
+
+    # embed_tokens 키 찾기
+    embed_key = None
+    for k in keys:
+        if "embed_tokens.weight" in k:
+            embed_key = k
+            break
+
+    if embed_key is None:
+        print("  WARNING: embed_tokens.weight not found, cannot verify tying")
+        return
+
+    # 텐서 로드 (lm_head 제외)
+    tensors = {}
+    original_size = filepath.stat().st_size
+    with safe_open(str(filepath), framework="pt") as f:
+        for key in keys:
+            if key != "lm_head.weight":
+                tensors[key] = f.get_tensor(key)
+
+    # 메타데이터 보존하면서 재저장
+    save_file(tensors, str(filepath), metadata=metadata or {})
+    new_size = filepath.stat().st_size
+    saved = (original_size - new_size) / 1e6
+    print(f"  Removed duplicate lm_head.weight ({saved:.1f} MB saved)")
+    print(f"  Safetensors: {original_size / 1e9:.3f} GB -> {new_size / 1e9:.3f} GB")
+
+
+def _fix_sharded_safetensors(output_dir: Path, index_path: Path):
+    """샤딩된 safetensors에서 중복 lm_head.weight 제거."""
+    with open(index_path, "r") as f:
+        index = json.load(f)
+
+    weight_map = index.get("weight_map", {})
+
+    if "lm_head.weight" not in weight_map:
+        print("  lm_head.weight not in weight_map, already tied")
+        return
+
+    lm_head_shard = weight_map.pop("lm_head.weight")
+    shard_path = output_dir / lm_head_shard
+
+    # 해당 샤드에서 lm_head.weight 제거
+    with safe_open(str(shard_path), framework="pt") as f:
+        keys = list(f.keys())
+        metadata = f.metadata()
+
+    if "lm_head.weight" in keys:
+        tensors = {}
+        with safe_open(str(shard_path), framework="pt") as f:
+            for key in keys:
+                if key != "lm_head.weight":
+                    tensors[key] = f.get_tensor(key)
+
+        if tensors:
+            original_size = shard_path.stat().st_size
+            save_file(tensors, str(shard_path), metadata=metadata or {})
+            new_size = shard_path.stat().st_size
+            saved = (original_size - new_size) / 1e6
+            print(f"  Removed lm_head.weight from {lm_head_shard} ({saved:.1f} MB saved)")
+        else:
+            # 샤드에 lm_head.weight만 있었으면 파일 삭제
+            shard_path.unlink()
+            print(f"  Removed empty shard: {lm_head_shard}")
+
+    # 인덱스 업데이트
+    # total_size 재계산
+    total_size = 0
+    for shard_file in set(weight_map.values()):
+        sp = output_dir / shard_file
+        if sp.exists():
+            with safe_open(str(sp), framework="pt") as f:
+                for key in f.keys():
+                    t = f.get_tensor(key)
+                    total_size += t.numel() * t.element_size()
+
+    index["metadata"]["total_size"] = total_size
+    index["weight_map"] = weight_map
+
+    with open(index_path, "w") as f:
+        json.dump(index, f, indent=2)
+    print(f"  Updated index: {index_path.name}")
+
+
 def quantize_fp8(
     model_path: str,
     output_path: str,
@@ -145,6 +270,10 @@ def quantize_fp8(
 
     # 토크나이저 저장
     tokenizer.save_pretrained(output_path)
+
+    # tie_word_embeddings 후처리: llmcompressor가 lm_head.weight를 별도 저장한 경우 제거
+    print("\nChecking weight tying...")
+    fix_tied_weights_after_save(output_path)
 
     print("=" * 60)
     print(f"FP8 quantization complete: {output_path}")
