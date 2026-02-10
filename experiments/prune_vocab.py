@@ -438,9 +438,14 @@ def prune_model(model_path: str, output_path: str):
             print("  Manually copying embed_tokens -> lm_head")
             output_emb.weight = input_emb
 
-    # config에 tie 설정 보존 확인
+    # model.config 업데이트 (save_pretrained가 이 값으로 config.json을 씀)
     model.config.tie_word_embeddings = True
     model.config.vocab_size = new_vocab_size
+    # special token ID 재매핑 (save_pretrained가 덮어쓰므로 여기서 반드시 갱신)
+    for key in ["bos_token_id", "eos_token_id", "pad_token_id"]:
+        old_id = config.get(key)
+        if old_id is not None and old_id in id_remap:
+            setattr(model.config, key, id_remap[old_id])
 
     # ---- 5. 토크나이저 파일 업데이트 ----
     print("\nUpdating tokenizer files...")
@@ -526,16 +531,7 @@ def prune_model(model_path: str, output_path: str):
         with open(output_dir / "tokenizer.json", "w", encoding="utf-8") as f:
             json.dump(tok_json, f, ensure_ascii=False)
 
-    # 5d. config.json 업데이트
-    new_config = copy.deepcopy(config)
-    new_config["vocab_size"] = new_vocab_size
-    for key in ["bos_token_id", "eos_token_id", "pad_token_id"]:
-        old_id = config.get(key)
-        if old_id is not None and old_id in id_remap:
-            new_config[key] = id_remap[old_id]
-
-    with open(output_dir / "config.json", "w", encoding="utf-8") as f:
-        json.dump(new_config, f, ensure_ascii=False, indent=2)
+    # 5d. (config.json은 model.save_pretrained 이후 최종 덮어쓰기 — Step 6b 참조)
 
     # 5e. tokenizer_config.json 업데이트
     new_tok_config = copy.deepcopy(tok_config)
@@ -569,6 +565,32 @@ def prune_model(model_path: str, output_path: str):
     # ---- 6. 모델 저장 ----
     print(f"\nSaving pruned model to {output_dir}...")
     model.save_pretrained(output_dir)
+
+    # 6b. config.json 최종 덮어쓰기
+    #     model.save_pretrained()가 쓴 config.json 위에 원본의 모든 필드를 보존하면서 덮어씀.
+    #     이유: model.config에 없을 수 있는 원본 필드(quantization_config 등)를 유지하기 위함.
+    #     FP8→prune 순서일 때 quantization_config가 누락되면 vLLM이 FP8 커널 대신
+    #     generic fallback을 사용하여 추론 성능이 크게 저하됨.
+    new_config = copy.deepcopy(config)  # 원본 config의 모든 필드 보존
+    new_config["vocab_size"] = new_vocab_size
+    new_config["tie_word_embeddings"] = True
+    for key in ["bos_token_id", "eos_token_id", "pad_token_id"]:
+        old_id = config.get(key)
+        if old_id is not None and old_id in id_remap:
+            new_config[key] = id_remap[old_id]
+
+    # save_pretrained가 추가했을 수 있는 새 필드도 병합
+    saved_config_path = output_dir / "config.json"
+    with open(saved_config_path, "r", encoding="utf-8") as f:
+        saved_config = json.load(f)
+    # save_pretrained가 추가한 필드 중 원본에 없던 것만 가져옴
+    for k, v in saved_config.items():
+        if k not in new_config:
+            new_config[k] = v
+
+    with open(saved_config_path, "w", encoding="utf-8") as f:
+        json.dump(new_config, f, ensure_ascii=False, indent=2)
+    print(f"  config.json finalized (quantization_config preserved: {'quantization_config' in new_config})")
 
     # generation_config.json 업데이트
     gen_config_path = output_dir / "generation_config.json"
