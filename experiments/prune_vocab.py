@@ -387,16 +387,34 @@ def prune_model(model_path: str, output_path: str):
 
     embed_weight = model.get_input_embeddings().weight.data  # [vocab_size, hidden_size]
     print(f"Original embedding shape: {embed_weight.shape}")
+    print(f"tie_word_embeddings: {config.get('tie_word_embeddings', False)}")
 
     # 보존할 행만 추출 (순서 유지)
     keep_indices = torch.tensor(preserve_ids, dtype=torch.long)
     new_embed_weight = embed_weight[keep_indices].clone()
     print(f"Pruned embedding shape:   {new_embed_weight.shape}")
 
-    # 임베딩 교체
+    # 임베딩 교체: resize → 올바른 데이터 덮어쓰기 → weight tying 보장
     model.resize_token_embeddings(new_vocab_size)
-    model.get_input_embeddings().weight.data = new_embed_weight
-    # tie_word_embeddings=true이면 lm_head도 자동 연동됨
+    model.get_input_embeddings().weight.data.copy_(new_embed_weight)
+
+    # weight tying 명시적으로 재적용
+    model.tie_weights()
+
+    # tying 검증
+    input_emb = model.get_input_embeddings().weight
+    output_emb = model.get_output_embeddings()
+    if output_emb is not None:
+        if output_emb.weight.data_ptr() == input_emb.data_ptr():
+            print("Weight tying verified: embed_tokens and lm_head share the same tensor")
+        else:
+            print("WARNING: Weight tying FAILED - embed_tokens and lm_head are NOT tied!")
+            print("  Manually copying embed_tokens -> lm_head")
+            output_emb.weight = input_emb
+
+    # config에 tie 설정 보존 확인
+    model.config.tie_word_embeddings = True
+    model.config.vocab_size = new_vocab_size
 
     # ---- 5. 토크나이저 파일 업데이트 ----
     print("\nUpdating tokenizer files...")
