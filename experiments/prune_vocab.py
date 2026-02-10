@@ -30,6 +30,13 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ============================================================================
+# 임베딩 정렬 설정
+# GPU Tensor Core 최적화를 위해 vocab_size를 이 값의 배수로 패딩합니다.
+# FP8: 최소 8, 권장 128. vLLM/TensorRT-LLM: 128 이상 권장.
+# ============================================================================
+VOCAB_ALIGNMENT = 128
+
+# ============================================================================
 # 제거 대상 문자체계 설정
 # 여기에 나열된 스크립트에 해당하는 토큰만 제거합니다.
 # 추가/제거하려면 이 집합을 수정하세요.
@@ -369,12 +376,23 @@ def prune_model(model_path: str, output_path: str):
     # ---- 3. ID 재매핑 테이블 생성 ----
     old_vocab_size = len(vocab)
     preserve_ids = sorted(set(range(old_vocab_size)) - prune_ids)
-    new_vocab_size = len(preserve_ids)
+    actual_keep = len(preserve_ids)
+
+    # vocab_size를 VOCAB_ALIGNMENT의 배수로 정렬 (GPU Tensor Core 최적화)
+    aligned_vocab_size = ((actual_keep + VOCAB_ALIGNMENT - 1) // VOCAB_ALIGNMENT) * VOCAB_ALIGNMENT
+    num_pad_tokens = aligned_vocab_size - actual_keep
+
+    print(f"\nTokens kept:       {actual_keep:,}")
+    print(f"Alignment:         {VOCAB_ALIGNMENT}")
+    print(f"Padding tokens:    {num_pad_tokens:,}")
+    print(f"Aligned vocab size: {aligned_vocab_size:,} (was {old_vocab_size:,})")
+    print(f"  divisible by 8:   {aligned_vocab_size % 8 == 0}")
+    print(f"  divisible by 128: {aligned_vocab_size % 128 == 0}")
+
+    new_vocab_size = aligned_vocab_size
 
     # old_id -> new_id
     id_remap = {old_id: new_id for new_id, old_id in enumerate(preserve_ids)}
-
-    print(f"\nNew vocab size: {new_vocab_size:,} (was {old_vocab_size:,})")
 
     # ---- 4. 모델 로드 & 임베딩 pruning ----
     print("\nLoading model...")
@@ -386,13 +404,21 @@ def prune_model(model_path: str, output_path: str):
     )
 
     embed_weight = model.get_input_embeddings().weight.data  # [vocab_size, hidden_size]
+    hidden_size = embed_weight.shape[1]
     print(f"Original embedding shape: {embed_weight.shape}")
     print(f"tie_word_embeddings: {config.get('tie_word_embeddings', False)}")
 
-    # 보존할 행만 추출 (순서 유지)
+    # 보존할 행 추출 + zero-padding으로 정렬
     keep_indices = torch.tensor(preserve_ids, dtype=torch.long)
-    new_embed_weight = embed_weight[keep_indices].clone()
-    print(f"Pruned embedding shape:   {new_embed_weight.shape}")
+    kept_weight = embed_weight[keep_indices]  # [actual_keep, hidden_size]
+
+    if num_pad_tokens > 0:
+        pad_weight = torch.zeros(num_pad_tokens, hidden_size, dtype=kept_weight.dtype)
+        new_embed_weight = torch.cat([kept_weight, pad_weight], dim=0)
+    else:
+        new_embed_weight = kept_weight.clone()
+
+    print(f"Aligned embedding shape:  {new_embed_weight.shape}")
 
     # 임베딩 교체: resize → 올바른 데이터 덮어쓰기 → weight tying 보장
     model.resize_token_embeddings(new_vocab_size)
@@ -566,11 +592,13 @@ def prune_model(model_path: str, output_path: str):
     print("\n" + "=" * 60)
     print("Vocab Pruning Complete")
     print("=" * 60)
-    print(f"  Vocab: {old_vocab_size:,} -> {new_vocab_size:,} ({len(prune_ids):,} removed)")
-    print(f"  Embedding: [{old_vocab_size}, {embed_weight.shape[1]}] -> [{new_vocab_size}, {embed_weight.shape[1]}]")
+    print(f"  Vocab: {old_vocab_size:,} -> {new_vocab_size:,} ({len(prune_ids):,} pruned, {num_pad_tokens} padded)")
+    print(f"  Embedding: [{old_vocab_size}, {hidden_size}] -> [{new_vocab_size}, {hidden_size}]")
+    print(f"  Alignment: {VOCAB_ALIGNMENT} (vocab_size % {VOCAB_ALIGNMENT} == {new_vocab_size % VOCAB_ALIGNMENT})")
     if original_size > 0 and pruned_size > 0:
         saved = original_size - pruned_size
         print(f"  Model size: {original_size / 1e9:.3f} GB -> {pruned_size / 1e9:.3f} GB ({saved / 1e6:.1f} MB saved)")
+    print(f"  Weight tying: {model.config.tie_word_embeddings}")
     print(f"  Output: {output_dir}")
 
     # 재매핑 정보 저장 (디버깅/검증용)
@@ -579,6 +607,11 @@ def prune_model(model_path: str, output_path: str):
         json.dump(
             {
                 "description": "old_token_id -> new_token_id mapping",
+                "original_vocab_size": old_vocab_size,
+                "aligned_vocab_size": new_vocab_size,
+                "actual_tokens_kept": actual_keep,
+                "pad_tokens": num_pad_tokens,
+                "alignment": VOCAB_ALIGNMENT,
                 "pruned_count": len(prune_ids),
                 "pruned_scripts": sorted(PRUNE_SCRIPTS),
                 "remap": {str(k): v for k, v in id_remap.items()},
