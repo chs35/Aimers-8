@@ -1,0 +1,18 @@
+
+============================================================
+Run Name: 20260211_192554_EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1
+Model: EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1
+Tasks: klue_nli,klue_sts,kobest_hellaswag,kobest_copa
+enable_thinking: False
+vLLM Settings: {'tensor_parallel_size': 1, 'gpu_memory_utilization': 0.85, 'max_gen_toks': 16384, 'trust_remote_code': True, 'enforce_eager': True}
+model_args: pretrained=EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1,tensor_parallel_size=1,gpu_memory_utilization=0.85,max_gen_toks=16384,trust_remote_code=true,enforce_eager=true,enable_thinking=false
+Log: logs/20260211_192554_EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1.log
+Result: results/20260211_192554_EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1.json
+============================================================
+
+Loading model...
+
+============================================================
+Running task [1/4]: klue_nli
+============================================================
+INFO 02-11 19:25:57 [utils.py:263] non-default args: {'trust_remote_code': True, 'seed': 1234, 'gpu_memory_utilization': 0.85, 'disable_log_stats': True, 'enforce_eager': True, 'model': 'EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1'}

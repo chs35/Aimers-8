@@ -66,7 +66,7 @@ SAVE_DIR = "EXAONE-4.0-1.2B-WidthPruned-LoRA"
 
 # ── Width Pruning (FFN) ──
 PRUNE_FFN = True
-FFN_PRUNING_RATIO = 0.25           # FFN intermediate 차원 제거 비율 (0.25 = 25% 제거)
+FFN_PRUNING_RATIO = 0.12           # FFN intermediate 차원 제거 비율 (0.25 = 25% 제거)
 IMPORTANCE_METRIC = "wanda"        # "wanda" | "activation_norm" | "weight_norm"
 NUM_CALIB_SAMPLES_PRUNING = 128    # 채널 중요도 계산용 캘리브레이션 샘플 수
 MAX_SEQ_LEN_PRUNING = 512          # 캘리브레이션 최대 시퀀스 길이

@@ -1,0 +1,106 @@
+
+============================================================
+Run Name: 20260211_191746_EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1
+Model: EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1
+Tasks: hellaswag
+enable_thinking: False
+vLLM Settings: {'tensor_parallel_size': 1, 'gpu_memory_utilization': 0.85, 'max_gen_toks': 16384, 'trust_remote_code': True, 'enforce_eager': True}
+model_args: pretrained=EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1,tensor_parallel_size=1,gpu_memory_utilization=0.85,max_gen_toks=16384,trust_remote_code=true,enforce_eager=true,enable_thinking=false
+Log: logs/20260211_191746_EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1.log
+Result: results/20260211_191746_EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1.json
+============================================================
+
+Loading model...
+
+============================================================
+Running task [1/1]: hellaswag
+============================================================
+INFO 02-11 19:17:49 [utils.py:263] non-default args: {'trust_remote_code': True, 'seed': 1234, 'gpu_memory_utilization': 0.85, 'disable_log_stats': True, 'enforce_eager': True, 'model': 'EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1'}
+INFO 02-11 19:17:49 [model.py:530] Resolved architecture: Exaone4ForCausalLM
+INFO 02-11 19:17:49 [model.py:1545] Using max model len 65536
+INFO 02-11 19:17:49 [scheduler.py:229] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 02-11 19:17:49 [vllm.py:630] Asynchronous scheduling is enabled.
+INFO 02-11 19:17:49 [vllm.py:637] Disabling NCCL for DP synchronization when using async scheduling.
+WARNING 02-11 19:17:49 [vllm.py:665] Enforce eager set, overriding optimization level to -O0
+INFO 02-11 19:17:49 [vllm.py:765] Cudagraph is disabled under eager mode
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:49 [core.py:97] Initializing a V1 LLM engine (v0.14.1) with config: model='EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1', speculative_config=None, tokenizer='EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=65536, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=1234, served_model_name=EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'level': None, 'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'splitting_ops': [], 'compile_mm_encoder': False, 'compile_sizes': [], 'compile_ranges_split_points': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'eliminate_noops': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': True}, 'local_cache_dir': None}
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:52 [parallel_state.py:1214] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://172.24.0.2:48557 backend=nccl
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:52 [parallel_state.py:1425] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:52 [gpu_model_runner.py:3808] Starting to load model EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1...
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:53 [cuda.py:351] Using FLASH_ATTN attention backend out of potential backends: ('FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION')
+[0;36m(EngineCore_DP0 pid=5938)[0;0m Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+[0;36m(EngineCore_DP0 pid=5938)[0;0m Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  2.73it/s]
+[0;36m(EngineCore_DP0 pid=5938)[0;0m Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:00<00:00,  2.72it/s]
+[0;36m(EngineCore_DP0 pid=5938)[0;0m 
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:54 [default_loader.py:291] Loading weights took 0.50 seconds
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:54 [gpu_model_runner.py:3905] Model loading took 2.04 GiB memory and 0.921359 seconds
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:56 [gpu_worker.py:358] Available KV cache memory: 15.69 GiB
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:56 [kv_cache_utils.py:1305] GPU KV cache size: 274,272 tokens
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:56 [kv_cache_utils.py:1310] Maximum concurrency for 65,536 tokens per request: 4.19x
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:56 [core.py:273] init engine (profile, create kv cache, warmup model) took 1.80 seconds
+[0;36m(EngineCore_DP0 pid=5938)[0;0m WARNING 02-11 19:17:56 [vllm.py:672] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+[0;36m(EngineCore_DP0 pid=5938)[0;0m INFO 02-11 19:17:56 [vllm.py:765] Cudagraph is disabled under eager mode
+INFO 02-11 19:17:57 [llm.py:347] Supported tasks: ['generate']
+README.md: 0.00B [00:00, ?B/s]README.md: 7.02kB [00:00, 27.8MB/s]
+data/train-00000-of-00001.parquet:   0%|   | 0.00/24.4M [00:00<?, ?B/s]data/train-00000-of-00001.parquet: 100%|#| 24.4M/24.4M [00:00<00:00, 38data/train-00000-of-00001.parquet: 100%|#| 24.4M/24.4M [00:00<00:00, 38
+data/test-00000-of-00001.parquet:   0%|    | 0.00/6.11M [00:00<?, ?B/s]data/test-00000-of-00001.parquet: 100%|#| 6.11M/6.11M [00:00<00:00, 27.data/test-00000-of-00001.parquet: 100%|#| 6.11M/6.11M [00:00<00:00, 27.
+data/validation-00000-of-00001.parquet:   0%| | 0.00/6.32M [00:00<?, ?Bdata/validation-00000-of-00001.parquet: 100%|#| 6.32M/6.32M [00:00<00:0data/validation-00000-of-00001.parquet: 100%|#| 6.32M/6.32M [00:00<00:0
+Generating train split:   0%|         | 0/39905 [00:00<?, ? examples/s]Generating train split:  53%|5| 21000/39905 [00:00<00:00, 205138.65 exaGenerating train split: 100%|#| 39905/39905 [00:00<00:00, 186852.52 exa
+Generating test split:   0%|          | 0/10003 [00:00<?, ? examples/s]Generating test split: 100%|#| 10003/10003 [00:00<00:00, 189635.08 exam
+Generating validation split:   0%|    | 0/10042 [00:00<?, ? examples/s]Generating validation split: 100%|#| 10042/10042 [00:00<00:00, 179684.0
+Map:   0%|                            | 0/39905 [00:00<?, ? examples/s]Map:   3%|3              | 1000/39905 [00:00<00:04, 8313.09 examples/s]Map:   5%|7              | 2052/39905 [00:00<00:03, 9508.80 examples/s]Map:   9%|#3             | 3654/39905 [00:00<00:03, 9930.01 examples/s]Map:  12%|#6            | 4725/39905 [00:00<00:03, 10189.12 examples/s]Map:  15%|##            | 5802/39905 [00:00<00:03, 10374.76 examples/s]Map:  17%|##4           | 6859/39905 [00:00<00:03, 10433.00 examples/s]Map:  20%|###            | 8122/39905 [00:01<00:06, 5272.44 examples/s]Map:  23%|###4           | 9242/39905 [00:01<00:04, 6302.28 examples/s]Map:  26%|###6          | 10372/39905 [00:01<00:04, 7296.10 examples/s]Map:  29%|####          | 11408/39905 [00:01<00:03, 7972.69 examples/s]Map:  32%|####4         | 12660/39905 [00:01<00:03, 8857.14 examples/s]Map:  35%|####8         | 13781/39905 [00:01<00:02, 9447.14 examples/s]Map:  37%|#####2        | 14882/39905 [00:01<00:02, 9859.07 examples/s]Map:  40%|#####6        | 16090/39905 [00:01<00:02, 9204.17 examples/s]Map:  44%|######1       | 17671/39905 [00:02<00:02, 9655.20 examples/s]Map:  48%|######6       | 19001/39905 [00:02<00:02, 9387.46 examples/s]Map:  50%|#######       | 20004/39905 [00:02<00:02, 9537.67 examples/s]Map:  53%|#######3      | 21000/39905 [00:02<00:01, 9503.06 examples/s]Map:  55%|#######7      | 22000/39905 [00:02<00:01, 9599.63 examples/s]Map:  58%|########      | 23000/39905 [00:02<00:01, 9705.52 examples/s]Map:  60%|########4     | 24001/39905 [00:02<00:01, 9766.64 examples/s]Map:  63%|########7     | 25006/39905 [00:02<00:01, 9844.39 examples/s]Map:  65%|#########1    | 26000/39905 [00:02<00:01, 9744.60 examples/s]Map:  68%|#########4    | 27001/39905 [00:03<00:01, 9798.15 examples/s]Map:  70%|#########8    | 28000/39905 [00:03<00:01, 9823.55 examples/s]Map:  73%|##########2   | 29259/39905 [00:03<00:01, 5731.81 examples/s]Map:  76%|##########6   | 30264/39905 [00:03<00:01, 6527.21 examples/s]Map:  78%|##########9   | 31278/39905 [00:03<00:01, 7280.03 examples/s]Map:  81%|###########3  | 32284/39905 [00:03<00:00, 7915.93 examples/s]Map:  83%|###########6  | 33304/39905 [00:03<00:00, 8478.55 examples/s]Map:  86%|############  | 34300/39905 [00:04<00:00, 8862.34 examples/s]Map:  88%|############3 | 35311/39905 [00:04<00:00, 9199.51 examples/s]Map:  92%|############9 | 36841/39905 [00:04<00:00, 9563.89 examples/s]Map:  96%|#############3| 38177/39905 [00:04<00:00, 9336.08 examples/s]Map:  98%|#############7| 39147/39905 [00:04<00:00, 9425.33 examples/s]Map: 100%|##############| 39905/39905 [00:04<00:00, 8705.11 examples/s]
+Map:   0%|                            | 0/10042 [00:00<?, ? examples/s]Map:  10%|#4             | 1000/10042 [00:00<00:00, 9046.86 examples/s]Map:  20%|###            | 2045/10042 [00:00<00:00, 9835.53 examples/s]Map:  31%|####3         | 3120/10042 [00:00<00:00, 10239.76 examples/s]Map:  46%|######4       | 4617/10042 [00:00<00:00, 10107.72 examples/s]Map:  60%|########9      | 6000/10042 [00:00<00:00, 9635.06 examples/s]Map:  70%|##########4    | 7000/10042 [00:00<00:00, 9644.61 examples/s]Map:  80%|###########9   | 8000/10042 [00:00<00:00, 9663.34 examples/s]Map:  90%|#############4 | 9000/10042 [00:00<00:00, 9662.06 examples/s]Map: 100%|#############9| 10000/10042 [00:01<00:00, 9691.25 examples/s]Map: 100%|##############| 10042/10042 [00:01<00:00, 9685.44 examples/s]
+[2026-02-11 19:18:17] INFO __init__.py:700: Selected tasks:
+[2026-02-11 19:18:17] INFO __init__.py:691: Task: hellaswag (hellaswag/hellaswag.yaml)
+[2026-02-11 19:18:17] WARNING evaluator.py:490: Chat template formatting change affects loglikelihood and multiple-choice tasks. See docs/chat-template-readme.md for details.
+[2026-02-11 19:18:17] INFO task.py:311: Building contexts for hellaswag on rank 0...
+  0%|                                        | 0/10042 [00:00<?, ?it/s]  1%|3                           | 135/10042 [00:00<00:07, 1347.09it/s]  3%|8                           | 310/10042 [00:00<00:06, 1580.15it/s]  5%|#3                          | 486/10042 [00:00<00:05, 1658.07it/s]  7%|#8                          | 660/10042 [00:00<00:05, 1689.62it/s]  8%|##3                         | 836/10042 [00:00<00:05, 1712.14it/s] 10%|##7                        | 1013/10042 [00:00<00:05, 1729.37it/s] 12%|###3                        | 1186/10042 [00:01<00:10, 832.57it/s] 14%|###6                       | 1364/10042 [00:01<00:08, 1005.77it/s] 15%|####1                      | 1545/10042 [00:01<00:07, 1171.36it/s] 17%|####6                      | 1726/10042 [00:01<00:06, 1315.76it/s] 19%|#####1                     | 1907/10042 [00:01<00:05, 1436.31it/s] 21%|#####6                     | 2089/10042 [00:01<00:05, 1535.13it/s] 23%|######1                    | 2271/10042 [00:01<00:04, 1610.26it/s] 24%|######5                    | 2453/10042 [00:01<00:04, 1667.81it/s] 26%|#######                    | 2631/10042 [00:01<00:04, 1668.32it/s] 28%|#######5                   | 2806/10042 [00:01<00:04, 1675.22it/s] 30%|########                   | 2987/10042 [00:02<00:04, 1712.75it/s] 31%|########5                  | 3162/10042 [00:02<00:04, 1717.90it/s] 33%|########9                  | 3337/10042 [00:02<00:03, 1713.80it/s] 35%|#########4                 | 3511/10042 [00:02<00:03, 1720.68it/s] 37%|#########9                 | 3685/10042 [00:02<00:03, 1725.13it/s] 38%|##########3                | 3859/10042 [00:02<00:03, 1713.68it/s] 40%|##########8                | 4034/10042 [00:02<00:03, 1722.44it/s] 42%|###########3               | 4209/10042 [00:02<00:03, 1729.81it/s] 44%|###########7               | 4385/10042 [00:02<00:03, 1736.87it/s] 45%|############2              | 4560/10042 [00:02<00:03, 1740.77it/s] 47%|############7              | 4735/10042 [00:03<00:03, 1742.10it/s] 49%|#############2             | 4910/10042 [00:03<00:02, 1742.37it/s] 51%|#############6             | 5086/10042 [00:03<00:02, 1745.11it/s] 52%|##############1            | 5262/10042 [00:03<00:02, 1747.54it/s] 54%|##############6            | 5437/10042 [00:03<00:02, 1746.31it/s] 56%|###############            | 5613/10042 [00:03<00:02, 1748.40it/s] 58%|###############5           | 5788/10042 [00:03<00:02, 1748.18it/s] 59%|################           | 5963/10042 [00:03<00:02, 1727.55it/s] 61%|################5          | 6145/10042 [00:03<00:02, 1753.36it/s] 63%|#################          | 6328/10042 [00:03<00:02, 1774.45it/s] 65%|#################5         | 6511/10042 [00:04<00:01, 1788.99it/s] 67%|#################9         | 6693/10042 [00:04<00:01, 1796.82it/s] 68%|##################4        | 6876/10042 [00:04<00:01, 1804.49it/s] 70%|##################9        | 7057/10042 [00:04<00:01, 1781.99it/s] 72%|###################4       | 7236/10042 [00:04<00:01, 1727.23it/s] 74%|###################9       | 7412/10042 [00:04<00:01, 1735.92it/s] 76%|####################4      | 7590/10042 [00:04<00:01, 1746.94it/s] 77%|####################8      | 7769/10042 [00:04<00:01, 1757.83it/s] 79%|#####################3     | 7947/10042 [00:04<00:01, 1763.12it/s] 81%|#####################8     | 8127/10042 [00:04<00:01, 1771.63it/s] 83%|######################3    | 8305/10042 [00:05<00:00, 1759.49it/s] 84%|######################8    | 8482/10042 [00:05<00:00, 1748.43it/s] 86%|#######################2   | 8657/10042 [00:05<00:00, 1746.13it/s] 88%|#######################7   | 8832/10042 [00:05<00:00, 1743.73it/s] 90%|########################2  | 9007/10042 [00:05<00:00, 1744.58it/s] 91%|########################6  | 9182/10042 [00:05<00:00, 1742.23it/s] 93%|#########################1 | 9357/10042 [00:05<00:00, 1740.65it/s] 95%|#########################6 | 9532/10042 [00:05<00:00, 1738.80it/s] 97%|########################## | 9706/10042 [00:05<00:00, 1738.37it/s] 98%|##########################5| 9880/10042 [00:05<00:00, 1737.80it/s]100%|##########################| 10042/10042 [00:06<00:00, 1651.01it/s]
+[2026-02-11 19:18:24] INFO evaluator.py:584: Running loglikelihood requests
+Running loglikelihood requests:   0%|        | 0/40168 [00:00<?, ?it/s]
+Adding requests:   0%|                       | 0/40168 [00:00<?, ?it/s][A
+Adding requests:   2%|2          | 902/40168 [00:00<00:04, 9017.92it/s][A
+Adding requests:   5%|4         | 1816/40168 [00:00<00:04, 9084.27it/s][A
+Adding requests:   7%|6         | 2732/40168 [00:00<00:04, 9117.15it/s][A
+Adding requests:   9%|9         | 3645/40168 [00:00<00:04, 9118.07it/s][A
+Adding requests:  11%|#1        | 4560/40168 [00:00<00:03, 9129.24it/s][A
+Adding requests:  14%|#3        | 5476/40168 [00:00<00:03, 9139.18it/s][A
+Adding requests:  16%|#5        | 6392/40168 [00:00<00:03, 9143.66it/s][A
+Adding requests:  18%|#8        | 7308/40168 [00:00<00:03, 9147.83it/s][A
+Adding requests:  20%|##        | 8224/40168 [00:00<00:03, 9150.38it/s][A
+Adding requests:  23%|##2       | 9141/40168 [00:01<00:03, 9154.43it/s][A
+Adding requests:  25%|##2      | 10057/40168 [00:01<00:03, 9146.07it/s][A
+Adding requests:  27%|##4      | 10973/40168 [00:01<00:03, 9149.06it/s][A
+Adding requests:  30%|##6      | 11888/40168 [00:01<00:03, 9148.62it/s][A
+Adding requests:  32%|##8      | 12806/40168 [00:01<00:02, 9156.10it/s][A
+Adding requests:  34%|###      | 13728/40168 [00:01<00:02, 9174.99it/s][A
+Adding requests:  36%|###2     | 14647/40168 [00:01<00:02, 9179.33it/s][A
+Adding requests:  39%|###4     | 15565/40168 [00:01<00:02, 9170.26it/s][A
+Adding requests:  41%|###6     | 16488/40168 [00:01<00:02, 9185.71it/s][A
+Adding requests:  43%|###9     | 17407/40168 [00:02<00:06, 3316.86it/s][A
+Adding requests:  46%|####1    | 18318/40168 [00:02<00:05, 4093.11it/s][A
+Adding requests:  48%|####3    | 19231/40168 [00:02<00:04, 4902.49it/s][A
+Adding requests:  50%|####5    | 20112/40168 [00:02<00:03, 5631.64it/s][A
+Adding requests:  52%|####7    | 21011/40168 [00:02<00:03, 6338.20it/s][A
+Adding requests:  55%|####9    | 21909/40168 [00:02<00:02, 6947.59it/s][A
+Adding requests:  57%|#####1   | 22824/40168 [00:03<00:02, 7492.77it/s][A
+Adding requests:  59%|#####3   | 23739/40168 [00:03<00:02, 7925.87it/s][A
+Adding requests:  61%|#####5   | 24644/40168 [00:03<00:01, 8230.43it/s][A
+Adding requests:  64%|#####7   | 25552/40168 [00:03<00:01, 8467.53it/s][A
+Adding requests:  66%|#####9   | 26462/40168 [00:03<00:01, 8646.89it/s][A
+Adding requests:  68%|######1  | 27364/40168 [00:03<00:01, 8539.16it/s][A
+Adding requests:  70%|######3  | 28252/40168 [00:03<00:01, 8636.66it/s][A
+Adding requests:  73%|######5  | 29145/40168 [00:03<00:01, 8720.59it/s][A
+Adding requests:  75%|######7  | 30048/40168 [00:03<00:01, 8809.15it/s][A
+Adding requests:  77%|######9  | 30972/40168 [00:04<00:01, 8935.43it/s][A
+Adding requests:  79%|#######1 | 31889/40168 [00:04<00:00, 9002.54it/s][A
+Adding requests:  82%|#######3 | 32806/40168 [00:04<00:00, 9051.72it/s][A
+Adding requests:  84%|#######5 | 33730/40168 [00:04<00:00, 9106.69it/s][A
+Adding requests:  86%|#######7 | 34649/40168 [00:04<00:00, 9130.08it/s][A
+Adding requests:  89%|#######9 | 35570/40168 [00:04<00:00, 9151.62it/s][A
+Adding requests:  91%|########1| 36500/40168 [00:04<00:00, 9195.51it/s][A
+Adding requests:  93%|########3| 37424/40168 [00:04<00:00, 9208.63it/s][A
+Adding requests:  95%|########5| 38346/40168 [00:04<00:00, 9119.83it/s][A
+Adding requests:  98%|########7| 39259/40168 [00:04<00:00, 9070.89it/s][A
+Adding requests: 100%|########9| 40167/40168 [00:05<00:00, 9051.11it/s][AAdding requests: 100%|#########| 40168/40168 [00:05<00:00, 8020.63it/s]
+
+Processed prompts:   0%| | 0/40168 [00:00<?, ?it/s, est. speed input: 0[AERROR 02-11 19:18:46 [core_client.py:610] Engine core proc EngineCore_DP0 died unexpectedly, shutting down client.
