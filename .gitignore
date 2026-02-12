@@ -17,3 +17,6 @@ EXAONE-4.0-1.2B-Sparse24-GPTQ
 EXAONE-4.0-1.2B-GPTQ-W4A16
 EXAONE-4.0-1.2B-WidthPruned-LoRA-trial1
 EXAONE-4.0-1.2B-WidthPruned-LoRA-trial2
+EXAONE-4.0-1.2B-WidthPruned-KD-Trial1
+
+EXAONE-4.0-1.2B-WidthPruned-KD-Trial2
