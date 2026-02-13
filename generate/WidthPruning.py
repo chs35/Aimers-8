@@ -26,11 +26,13 @@ Knowledge Distillation Recovery:
     · Logit KD (KL divergence): teacher/student의 softmax 출력 분포 매칭
     · Hidden State KD (MSE): 모든 디코더 레이어의 hidden state 1:1 매칭
   - Width pruning은 hidden_size(2048)를 유지하므로 projection layer 불필요
-  - LoRA를 사용하여 메모리 효율적으로 학습 (전체의 ~1-2% 파라미터만 학습)
-  - 학습 후 merge_and_unload()로 LoRA 가중치를 base 모델에 병합하여 추론 오버헤드 제거
+  - 두 가지 학습 모드 지원 (USE_LORA로 선택):
+    · LoRA 모드: 저랭크 어댑터로 메모리 효율적 학습 (rank ≤ 128 권장)
+    · Direct Training 모드: 특정 projection layer만 unfreeze하여 직접 학습 (rank > 128이면 권장)
+  - LoRA 모드에서는 학습 후 merge_and_unload()로 가중치 병합
 
 GPU 호환: L4(sm_89) 이상 모든 GPU에서 동작
-필요 패키지: pip install peft  (Dockerfile에 미포함)
+필요 패키지: pip install peft  (LoRA 모드에서만 필요, Dockerfile에 미포함)
 """
 
 import os
@@ -46,13 +48,17 @@ from transformers import (
     DataCollatorForLanguageModeling,
 )
 
-try:
-    from peft import LoraConfig, get_peft_model, TaskType
-except ImportError:
-    import subprocess
-    print("peft 패키지가 없습니다. 설치 중...")
-    subprocess.check_call(["pip", "install", "peft", "-q"])
-    from peft import LoraConfig, get_peft_model, TaskType
+def _import_peft():
+    """LoRA 모드에서만 peft를 import (Direct Training 모드에서는 불필요)"""
+    try:
+        from peft import LoraConfig, get_peft_model, TaskType
+        return LoraConfig, get_peft_model, TaskType
+    except ImportError:
+        import subprocess
+        print("peft 패키지가 없습니다. 설치 중...")
+        subprocess.check_call(["pip", "install", "peft", "-q"])
+        from peft import LoraConfig, get_peft_model, TaskType
+        return LoraConfig, get_peft_model, TaskType
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  HYPERPARAMETERS — 이 섹션만 수정하면 됩니다                  ║
@@ -73,28 +79,59 @@ MAX_SEQ_LEN_PRUNING = 512          # 캘리브레이션 최대 시퀀스 길이
 WARP_ALIGN = True                  # 프루닝 후 차원을 32의 배수로 정렬
 
 # ── Width Pruning (Attention Head) ──
-PRUNE_HEADS = False
+PRUNE_ATTN_HEADS = False
 NUM_HEADS_TO_REMOVE = 2            # 제거할 attention head 수 (KV 그룹 단위), 1.2B 모델은 디코더 당 8그룹(GQA)
 
-# ── Knowledge Distillation + LoRA ──
+# ── Knowledge Distillation ──
 KD_ENABLED = True                  # KD 학습 활성화/비활성화
 KD_TEMPERATURE = 2.0               # soft target temperature
 KD_ALPHA_TASK = 0.3                # task loss (CE) 가중치
 KD_ALPHA_LOGIT = 0.2               # logit distillation (KL div) 가중치
 KD_ALPHA_HIDDEN = 0.5              # hidden state distillation (MSE) 가중치
 
-# LoRA (학습 효율을 위해 여전히 사용)
+# ── 학습 모드 선택 ──
+# True: LoRA 사용 (rank ≤ 128 권장, 메모리 효율적)
+# False: 특정 projection layer만 직접 학습 (rank > 128이면 이 모드가 더 효과적)
+#
+# LoRA rank별 파라미터 수 (1.2B 모델, FFN 3모듈 × 16레이어 기준):
+#   rank  8  → 2.2M (0.6%)   |  rank  64 → 17.3M (4.9%)
+#   rank 128 → 34.6M (9.8%)  |  rank 256 → 69.2M (19.6%)
+# Direct training (gate+up+down × 16레이어): 352M (100%) → 2.8GB optimizer mem
+# Direct training (gate+down × 16레이어): 235M (67%) → 1.9GB optimizer mem
+#
+# 권장: rank ≤ 128이면 LoRA, rank > 128이면 Direct Training으로 전환
+USE_LORA = True
+
+# ── LoRA 설정 (USE_LORA=True 일 때만 적용) ──
 LORA_RANK = 64                     # LoRA rank (KD에서는 더 큰 rank 사용)
 LORA_ALPHA = 128                   # LoRA alpha (보통 rank의 2배, scaling = alpha/rank)
 LORA_DROPOUT = 0.05                # LoRA dropout (과적합 방지)
-LORA_LR = 2e-4                     # 학습률
-LORA_EPOCHS = 5                    # 에폭 수, 기본은 3, 늘리면 성능 상승 / 과적합 가능성 상승 및 시간 소요 상승
-LORA_BATCH_SIZE = 4                # per-device 배치 크기 (GPU 메모리에 따라 조절)
-LORA_GRAD_ACCUM = 8                # gradient accumulation (effective batch = 4*8=32)
-LORA_TARGET_MODULES = [            # LoRA 적용 대상 모듈 (모든 projection)
+LORA_TARGET_MODULES_FFN = [        # FFN만 프루닝 시 LoRA 대상 (프루닝된 모듈만)
+    "gate_proj", "up_proj", "down_proj",
+]
+LORA_TARGET_MODULES_ALL = [        # Attention + FFN 모두 프루닝 시 LoRA 대상
     "q_proj", "k_proj", "v_proj", "o_proj",
     "gate_proj", "up_proj", "down_proj",
 ]
+
+# ── Direct Training 설정 (USE_LORA=False 일 때만 적용) ──
+# 학습할 projection layer 이름 목록 (나머지는 freeze)
+# FFN: "gate_proj", "up_proj", "down_proj"
+# Attention: "q_proj", "k_proj", "v_proj", "o_proj"
+DIRECT_TRAIN_MODULES_FFN = [       # FFN만 프루닝 시 직접 학습 대상
+    "gate_proj", "down_proj",      # up_proj 제외로 메모리 절약 (gate와 up은 유사 역할)
+]
+DIRECT_TRAIN_MODULES_ALL = [       # Attention + FFN 모두 프루닝 시 직접 학습 대상
+    "q_proj", "v_proj",            # k_proj, o_proj 제외로 메모리 절약
+    "gate_proj", "down_proj",
+]
+
+# ── 공통 학습 설정 ──
+KD_LR = 2e-4                       # 학습률 (LoRA 모드)
+DIRECT_LR = 5e-5                   # 학습률 (Direct 모드, LoRA보다 낮게 설정)
+KD_EPOCHS = 5                      # 에폭 수, 기본은 3, 늘리면 성능 상승 / 과적합 가능성 상승 및 시간 소요 상승
+KD_BATCH_SIZE = 4                  # per-device 배치 크기 (GPU 메모리에 따라 조절)
+KD_GRAD_ACCUM = 8                  # gradient accumulation (effective batch = 4*8=32)
 NUM_TRAIN_SAMPLES = 1000           # KD 학습용 샘플 수
 MAX_SEQ_LEN_TRAIN = 512            # KD 학습용 최대 시퀀스 길이
 
@@ -611,7 +648,7 @@ if __name__ == "__main__":
     # ===========================================================
     # Step 5: Attention Head Pruning (선택적)
     # ===========================================================
-    if PRUNE_HEADS:
+    if PRUNE_ATTN_HEADS:
         print("=" * 60)
         print(f"Step 5: Attention Head Pruning ({NUM_HEADS_TO_REMOVE}개 KV 그룹 제거)")
         print("=" * 60)
@@ -631,7 +668,7 @@ if __name__ == "__main__":
         print()
     else:
         print("=" * 60)
-        print("Step 5: Attention Head Pruning 건너뜀 (PRUNE_HEADS=False)")
+        print("Step 5: Attention Head Pruning 건너뜀 (PRUNE_ATTN_HEADS=False)")
         print("=" * 60)
         head_pruned_params = ffn_pruned_params
         print()
@@ -687,29 +724,57 @@ if __name__ == "__main__":
         train_ds = train_ds.map(tokenize_fn, remove_columns=train_ds.column_names)
         print(f"  학습 샘플 수: {len(train_ds)}")
 
-        # 6-3. Student 모델에 LoRA 적용
-        print(f"  LoRA 적용 (rank={LORA_RANK}, alpha={LORA_ALPHA}, modules={LORA_TARGET_MODULES})...")
-        lora_config = LoraConfig(
-            r=LORA_RANK,
-            lora_alpha=LORA_ALPHA,
-            lora_dropout=LORA_DROPOUT,
-            target_modules=LORA_TARGET_MODULES,
-            bias="none",
-            task_type=TaskType.CAUSAL_LM,
-        )
-        model = get_peft_model(model, lora_config)
-        model.print_trainable_parameters()
+        # 6-3. Student 모델 학습 설정 (LoRA vs Direct Training)
+        if USE_LORA:
+            # ── LoRA 모드: 저랭크 어댑터로 메모리 효율적 학습 ──
+            LoraConfig, get_peft_model, TaskType = _import_peft()
+            lora_target = LORA_TARGET_MODULES_ALL if PRUNE_ATTN_HEADS else LORA_TARGET_MODULES_FFN
+            print(f"  [LoRA 모드] rank={LORA_RANK}, alpha={LORA_ALPHA}, modules={lora_target}")
+            lora_config = LoraConfig(
+                r=LORA_RANK,
+                lora_alpha=LORA_ALPHA,
+                lora_dropout=LORA_DROPOUT,
+                target_modules=lora_target,
+                bias="none",
+                task_type=TaskType.CAUSAL_LM,
+            )
+            model = get_peft_model(model, lora_config)
+            model.print_trainable_parameters()
+            learning_rate = KD_LR
+        else:
+            # ── Direct Training 모드: 특정 projection layer만 unfreeze ──
+            direct_target = DIRECT_TRAIN_MODULES_ALL if PRUNE_ATTN_HEADS else DIRECT_TRAIN_MODULES_FFN
+            print(f"  [Direct Training 모드] 학습 대상 모듈: {direct_target}")
+
+            # 전체 파라미터 freeze
+            model.requires_grad_(False)
+
+            # 지정된 모듈만 unfreeze
+            unfrozen_params = 0
+            total_params_model = sum(p.numel() for p in model.parameters())
+            for name, param in model.named_parameters():
+                if any(mod in name for mod in direct_target):
+                    param.requires_grad = True
+                    unfrozen_params += param.numel()
+
+            print(f"  학습 파라미터: {unfrozen_params:,} / {total_params_model:,} "
+                  f"({unfrozen_params / total_params_model * 100:.2f}%)")
+            learning_rate = DIRECT_LR
 
         # 6-4. KD 학습
         model.config.use_cache = False
-        model.enable_input_require_grads()
+        if USE_LORA:
+            model.enable_input_require_grads()
+        else:
+            # Direct Training에서도 gradient checkpointing 호환을 위해 필요
+            model.enable_input_require_grads()
 
         training_args = TrainingArguments(
             output_dir="./kd_recovery_output",
-            per_device_train_batch_size=LORA_BATCH_SIZE,
-            gradient_accumulation_steps=LORA_GRAD_ACCUM,
-            num_train_epochs=LORA_EPOCHS,
-            learning_rate=LORA_LR,
+            per_device_train_batch_size=KD_BATCH_SIZE,
+            gradient_accumulation_steps=KD_GRAD_ACCUM,
+            num_train_epochs=KD_EPOCHS,
+            learning_rate=learning_rate,
             bf16=True,
             gradient_checkpointing=True,
             logging_steps=5,
@@ -732,8 +797,9 @@ if __name__ == "__main__":
             data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
         )
 
-        print(f"  KD 학습 시작 (T={KD_TEMPERATURE}, alpha_task={KD_ALPHA_TASK}, "
-              f"alpha_logit={KD_ALPHA_LOGIT}, alpha_hidden={KD_ALPHA_HIDDEN})...")
+        mode_str = f"LoRA(rank={LORA_RANK})" if USE_LORA else f"Direct({direct_target})"
+        print(f"  KD 학습 시작 [{mode_str}] (T={KD_TEMPERATURE}, alpha_task={KD_ALPHA_TASK}, "
+              f"alpha_logit={KD_ALPHA_LOGIT}, alpha_hidden={KD_ALPHA_HIDDEN}, lr={learning_rate})...")
         trainer.train()
         print("  KD 학습 완료!")
 
@@ -742,9 +808,10 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
         print("  Teacher 모델 메모리 해제 완료")
 
-        # 6-6. LoRA 가중치를 base 모델에 병합
-        print("  LoRA 가중치 병합 (merge_and_unload)...")
-        model = model.merge_and_unload()
+        # 6-6. 후처리 (LoRA: merge, Direct: re-enable cache)
+        if USE_LORA:
+            print("  LoRA 가중치 병합 (merge_and_unload)...")
+            model = model.merge_and_unload()
         model.config.use_cache = True
 
         # 학습 임시 파일 정리
@@ -752,7 +819,7 @@ if __name__ == "__main__":
         if os.path.exists("./kd_recovery_output"):
             shutil.rmtree("./kd_recovery_output")
 
-        print("  KD + LoRA 병합 완료! 모델이 복구되었습니다.")
+        print(f"  KD {'+ LoRA 병합' if USE_LORA else '(Direct Training)'} 완료! 모델이 복구되었습니다.")
         print()
     else:
         print("=" * 60)
@@ -800,23 +867,25 @@ if __name__ == "__main__":
         "pruned_intermediate_size": new_intermediate_size,
         "warp_aligned": WARP_ALIGN,
         # Attention head pruning info
-        "prune_heads": PRUNE_HEADS,
+        "prune_heads": PRUNE_ATTN_HEADS,
         "original_num_attention_heads": num_attention_heads,
         "original_num_kv_heads": num_kv_heads,
         "pruned_num_attention_heads": model.config.num_attention_heads,
         "pruned_num_kv_heads": model.config.num_key_value_heads,
-        "num_heads_removed": NUM_HEADS_TO_REMOVE if PRUNE_HEADS else 0,
+        "num_heads_removed": NUM_HEADS_TO_REMOVE if PRUNE_ATTN_HEADS else 0,
         # KD info
         "kd_enabled": KD_ENABLED,
         "kd_temperature": KD_TEMPERATURE if KD_ENABLED else None,
         "kd_alpha_task": KD_ALPHA_TASK if KD_ENABLED else None,
         "kd_alpha_logit": KD_ALPHA_LOGIT if KD_ENABLED else None,
         "kd_alpha_hidden": KD_ALPHA_HIDDEN if KD_ENABLED else None,
-        # LoRA info
-        "lora_rank": LORA_RANK if KD_ENABLED else None,
-        "lora_alpha": LORA_ALPHA if KD_ENABLED else None,
-        "lora_epochs": LORA_EPOCHS if KD_ENABLED else None,
-        "lora_lr": LORA_LR if KD_ENABLED else None,
+        # Training mode info
+        "use_lora": USE_LORA if KD_ENABLED else None,
+        "lora_rank": LORA_RANK if (KD_ENABLED and USE_LORA) else None,
+        "lora_alpha": LORA_ALPHA if (KD_ENABLED and USE_LORA) else None,
+        "direct_train_modules": (DIRECT_TRAIN_MODULES_ALL if PRUNE_ATTN_HEADS else DIRECT_TRAIN_MODULES_FFN) if (KD_ENABLED and not USE_LORA) else None,
+        "learning_rate": (KD_LR if USE_LORA else DIRECT_LR) if KD_ENABLED else None,
+        "kd_epochs": KD_EPOCHS if KD_ENABLED else None,
         "train_samples": NUM_TRAIN_SAMPLES if KD_ENABLED else None,
         # Param counts
         "original_params": total_params,
@@ -841,7 +910,15 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"  원본 모델:          {MODEL_ID}")
     print(f"  FFN Pruning:        {'intermediate_size ' + str(intermediate_size) + ' → ' + str(new_intermediate_size) + ' (' + str(round((1 - new_intermediate_size / intermediate_size) * 100, 1)) + '% 감소)' if PRUNE_FFN else '비활성화'}")
-    print(f"  Head Pruning:       {'heads ' + str(num_attention_heads) + ' → ' + str(model.config.num_attention_heads) + ', kv_heads ' + str(num_kv_heads) + ' → ' + str(model.config.num_key_value_heads) if PRUNE_HEADS else '비활성화'}")
-    print(f"  KD 복구:            {'T=' + str(KD_TEMPERATURE) + ', rank=' + str(LORA_RANK) + ', epochs=' + str(LORA_EPOCHS) if KD_ENABLED else '비활성화'}")
+    print(f"  Head Pruning:       {'heads ' + str(num_attention_heads) + ' → ' + str(model.config.num_attention_heads) + ', kv_heads ' + str(num_kv_heads) + ' → ' + str(model.config.num_key_value_heads) if PRUNE_ATTN_HEADS else '비활성화'}")
+    if KD_ENABLED:
+        if USE_LORA:
+            kd_info = f"LoRA(rank={LORA_RANK}, lr={KD_LR}), T={KD_TEMPERATURE}, epochs={KD_EPOCHS}"
+        else:
+            dt_mods = DIRECT_TRAIN_MODULES_ALL if PRUNE_ATTN_HEADS else DIRECT_TRAIN_MODULES_FFN
+            kd_info = f"Direct({dt_mods}, lr={DIRECT_LR}), T={KD_TEMPERATURE}, epochs={KD_EPOCHS}"
+    else:
+        kd_info = "비활성화"
+    print(f"  KD 복구:            {kd_info}")
     print(f"  파라미터:           {total_params:,} → {head_pruned_params:,} ({pruning_meta['param_reduction_pct']}% 감소)")
     print(f"  저장 위치:          {SAVE_DIR}/")

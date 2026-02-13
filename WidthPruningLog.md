@@ -36,6 +36,7 @@ Sparsity 0.12로 설정 시 파라미터 7.4% 감소(예상 목표치)
 
 ### KD Trial2(KD - LoRA)
 Sparsity 0.08로 설정 시 파라미터 추가 감소
+intermediate 3744
 
 벤치마크 성능
 |태스크|TPOT(ms/token)|정답률(%)|
@@ -43,4 +44,34 @@ Sparsity 0.08로 설정 시 파라미터 추가 감소
 |gsm8k|1.50|0.5504, 5656|
 
 성능 방어가 완벽하지는 않지만 효과적, 가속 효과 기대 가능.
-제출 시 점수 : 
+제출 시 점수 : 0.548
+
+### KD Trial3(KD - LoRA)
+Sparsity 0.15로 설정
+intermediate 3584와 3744 사이
+
+성능은 손실이 크지만, KD의 효과를 관찰할 수 있었음
+제출 시 점수 : 0.380
+
+### KD Trial4(KD - LoRA)
+Sparsity 0.12로 설정
+intermediate 3584
+
+성능은 손실이 크지만, KD의 효과를 관찰할 수 있었음
+제출 시 점수 : 0.45
+
+### KD Trial5(KD - LoRA)
+Sparsity 0.08로 설정
+intermediate 3744
+
+벤치마크 성능
+|태스크|TPOT(ms/token)|정답률(%)|
+|-----|----|-----|
+|gsm8k|1.50|0.5527, 0.5671|
+
+더 강한 KD 진행
+|LoRA Rank|LoRA Alpha|Epoch|
+|---------|-----------|-----|
+|128|256|7|
+
+벤치 차이가 적어 차후 시도에서도 LoRA는 사용할 예정이며, 이 Sparsity에서 KD의 강도는 이번 Trial 정도가 적절하다고 판단.
