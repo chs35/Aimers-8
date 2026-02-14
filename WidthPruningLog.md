@@ -75,3 +75,53 @@ intermediate 3744
 |128|256|7|
 
 벤치 차이가 적어 차후 시도에서도 LoRA는 사용할 예정이며, 이 Sparsity에서 KD의 강도는 이번 Trial 정도가 적절하다고 판단.
+
+### KD Trial 6(KD w/o LoRA)
+확인을 위해 LoRA 없이 KD 진행, Sparsity는 Trial5와 동일, epoch도 7로 동일
+
+벤치마크 성능
+|태스크|TPOT(ms/token)|정답률(%)|
+|-----|----|-----|
+|gsm8k|2.41|0.5610,0.5754|
+
+### KD Trial7(KD - LoRA)
+Sparsity 0.08로 설정
+intermediate 3744
+
+
+|개선된 KD 기법|
+|------------|
+|Minitron 방식에 기반한 Temperature(T=1)|
+|Adaptive KLD|
+|CosineSimilarity for Hidden State|
+|Dynamic Alpha|
+
+
+|태스크|TPOT(ms/token)|정답률(%)|
+|-----|----|-----|
+|gsm8k|1.52|0.5406, 0.5512|
+
+
+|LoRA Rank|LoRA Alpha|Epoch|
+|---------|-----------|-----|
+|64|128|5|
+
+### KD Trial8(KD w/o LoRA)
+Sparsity 0.08로 설정
+intermediate 3744
+
+
+epoch 12
+
+
+|개선된 KD 기법|
+|------------|
+|Minitron 방식에 기반한 Temperature(T=1)|
+|Adaptive KLD|
+|CosineSimilarity for Hidden State|
+|Dynamic Alpha|
+
+
+|태스크|TPOT(ms/token)|정답률(%)|
+|-----|----|-----|
+|gsm8k|||

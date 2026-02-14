@@ -19,12 +19,19 @@ Width Pruning은 FFN의 intermediate 차원을 줄여 작은 dense 행렬을 만
   - activation_norm: 캘리브레이션 데이터에서 채널별 활성화 L2 norm 평균
   - weight_norm: gate_proj, up_proj 가중치의 행 L2 norm 합
 
-Knowledge Distillation Recovery:
+Knowledge Distillation Recovery (논문 기반 개선 버전):
   - 원본(프루닝 전) 모델을 teacher, 프루닝된 모델을 student로 사용
-  - 3가지 loss를 결합하여 학습:
-    · Task loss (CE): 일반적인 language modeling loss
-    · Logit KD (KL divergence): teacher/student의 softmax 출력 분포 매칭
-    · Hidden State KD (MSE): 모든 디코더 레이어의 hidden state 1:1 매칭
+  - 최대 5가지 loss를 결합하여 학습:
+    · Task loss (CE): 일반적인 language modeling loss (Minitron: 제거가 최적)
+    · Logit KD: Forward/Reverse/Adaptive KL divergence (AKL 논문)
+    · Hidden State KD: Cosine Similarity 또는 MSE (CoDIR 논문)
+    · Attention Map Transfer: teacher attention pattern KL 매칭
+    · Embedding Output 매칭: 입력 표현 정렬
+  - 논문 기반 개선:
+    · Temperature 1.0 (Minitron: LLM에서 ≤1.0 최적)
+    · Adaptive KL: FKL→RKL 동적 전환 (AKL 논문)
+    · 동적 α 가중치: loss 비율 기반 자동 조절 (Minitron)
+    · Cosine Similarity: MSE 대비 scale-invariant, gradient 안정
   - Width pruning은 hidden_size(2048)를 유지하므로 projection layer 불필요
   - 두 가지 학습 모드 지원 (USE_LORA로 선택):
     · LoRA 모드: 저랭크 어댑터로 메모리 효율적 학습 (rank ≤ 128 권장)
@@ -65,10 +72,13 @@ def _import_peft():
 # ╚══════════════════════════════════════════════════════════════╝
 
 # ── 모델 & 데이터셋 ──
-MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
+MODEL_ID = "EXAONE-4.0-1.2B-FP8"
+LOCAL_MODEL_DIR = os.path.join("models", MODEL_ID.split("/")[-1])
+TEACHER_MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"  # KD teacher 모델 (None이면 MODEL_ID와 동일)
+TEACHER_LOCAL_MODEL_DIR = os.path.join("models", TEACHER_MODEL_ID.split("/")[-1])
 DATASET_ID = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
-SAVE_DIR = "EXAONE-4.0-1.2B-WidthPruned-KD-Trial2"
+SAVE_DIR = "EXAONE-4.0-1.2B-WidthPruned-KD-Trial9"
 
 # ── Width Pruning (FFN) ──
 PRUNE_FFN = True
@@ -84,10 +94,15 @@ NUM_HEADS_TO_REMOVE = 2            # 제거할 attention head 수 (KV 그룹 단
 
 # ── Knowledge Distillation ──
 KD_ENABLED = True                  # KD 학습 활성화/비활성화
-KD_TEMPERATURE = 2.0               # soft target temperature
-KD_ALPHA_TASK = 0.3                # task loss (CE) 가중치
-KD_ALPHA_LOGIT = 0.2               # logit distillation (KL div) 가중치
-KD_ALPHA_HIDDEN = 0.5              # hidden state distillation (MSE) 가중치
+KD_TEMPERATURE = 1.0               # soft target temperature (Minitron: LLM에서 ≤1.0이 최적)
+KD_ALPHA_TASK = 0.0                # task loss (CE) 가중치 (Minitron: CE 제거가 최고 성능)
+KD_ALPHA_LOGIT = 0.7               # logit distillation (KL div) 가중치 (주력 loss)
+KD_ALPHA_HIDDEN = 0.3              # hidden state distillation 가중치
+KD_ALPHA_ATTN = 0.0                # attention map transfer 가중치 (0이면 비활성화)
+KD_ALPHA_EMBED = 0.0               # embedding output 매칭 가중치 (0이면 비활성화)
+KD_USE_COSINE_HIDDEN = True        # True: cosine similarity, False: MSE (기존)
+KD_USE_AKL = True                  # Adaptive KL: FKL+RKL 동적 결합 (AKL 논문)
+KD_USE_DYNAMIC_ALPHA = True        # 동적 loss 가중치 (Minitron 방식: logit/hidden 비율)
 
 # ── 학습 모드 선택 ──
 # True: LoRA 사용 (rank ≤ 128 권장, 메모리 효율적)
@@ -100,7 +115,7 @@ KD_ALPHA_HIDDEN = 0.5              # hidden state distillation (MSE) 가중치
 # Direct training (gate+down × 16레이어): 235M (67%) → 1.9GB optimizer mem
 #
 # 권장: rank ≤ 128이면 LoRA, rank > 128이면 Direct Training으로 전환
-USE_LORA = True
+USE_LORA = False
 
 # ── LoRA 설정 (USE_LORA=True 일 때만 적용) ──
 LORA_RANK = 64                     # LoRA rank (KD에서는 더 큰 rank 사용)
@@ -129,7 +144,7 @@ DIRECT_TRAIN_MODULES_ALL = [       # Attention + FFN 모두 프루닝 시 직접
 # ── 공통 학습 설정 ──
 KD_LR = 2e-4                       # 학습률 (LoRA 모드)
 DIRECT_LR = 5e-5                   # 학습률 (Direct 모드, LoRA보다 낮게 설정)
-KD_EPOCHS = 5                      # 에폭 수, 기본은 3, 늘리면 성능 상승 / 과적합 가능성 상승 및 시간 소요 상승
+KD_EPOCHS = 12                      # 에폭 수, 기본은 3, 늘리면 성능 상승 / 과적합 가능성 상승 및 시간 소요 상승
 KD_BATCH_SIZE = 4                  # per-device 배치 크기 (GPU 메모리에 따라 조절)
 KD_GRAD_ACCUM = 8                  # gradient accumulation (effective batch = 4*8=32)
 NUM_TRAIN_SAMPLES = 1000           # KD 학습용 샘플 수
@@ -462,53 +477,141 @@ def prune_attention_heads(model, num_groups_to_remove):
 
 class KDTrainer(Trainer):
     """
-    Knowledge Distillation Trainer.
+    Knowledge Distillation Trainer (논문 기반 개선 버전).
 
-    Teacher 모델의 logit과 hidden state를 사용하여 student 모델을 학습한다.
-    3가지 loss를 결합: task loss (CE) + logit KD (KL div) + hidden state KD (MSE)
+    Teacher 모델의 logit, hidden state, attention map, embedding을 사용하여 student를 학습.
+    개선 사항 (Minitron, MiniLLM, AKL, CoDIR 등 논문 기반):
+      - Temperature 1.0 (Minitron: LLM에서 ≤1.0 최적)
+      - CE 제거, Logit KLD 주력 (Minitron: logit-only가 최고 성능)
+      - Adaptive KL: FKL+RKL 동적 결합 (AKL 논문)
+      - Cosine Similarity for hidden states (MSE 대신, scale-invariant)
+      - Attention Map Transfer (teacher attention pattern 전달)
+      - Embedding Output 매칭 (입력 표현 정렬)
+      - 동적 α 가중치 (Minitron: loss 비율 기반)
     """
 
-    def __init__(self, teacher_model, temperature, alpha_task, alpha_logit, alpha_hidden, **kwargs):
+    def __init__(self, teacher_model, temperature, alpha_task, alpha_logit, alpha_hidden,
+                 alpha_attn=0.0, alpha_embed=0.0,
+                 use_cosine_hidden=True, use_akl=True, use_dynamic_alpha=True,
+                 total_train_steps=None, **kwargs):
         super().__init__(**kwargs)
         self.teacher = teacher_model
         self.temperature = temperature
         self.alpha_task = alpha_task
         self.alpha_logit = alpha_logit
         self.alpha_hidden = alpha_hidden
+        self.alpha_attn = alpha_attn
+        self.alpha_embed = alpha_embed
+        self.use_cosine_hidden = use_cosine_hidden
+        self.use_akl = use_akl
+        self.use_dynamic_alpha = use_dynamic_alpha
+        self.total_train_steps = total_train_steps
+        self._current_step = 0
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        # Student forward (with grad, output_hidden_states=True)
-        student_outputs = model(**inputs, output_hidden_states=True)
+        self._current_step += 1
+
+        # Student forward (with grad, output_hidden_states=True, output_attentions if needed)
+        need_attn = self.alpha_attn > 0
+        student_outputs = model(
+            **inputs, output_hidden_states=True,
+            output_attentions=need_attn,
+        )
         task_loss = student_outputs.loss  # standard CE loss
 
         # Teacher forward (no grad)
         with torch.no_grad():
-            teacher_outputs = self.teacher(**inputs, output_hidden_states=True)
+            teacher_outputs = self.teacher(
+                **inputs, output_hidden_states=True,
+                output_attentions=need_attn,
+            )
 
-        # 1) Logit KD: KL divergence
+        # ── 1) Logit KD ──
         student_logits = student_outputs.logits
         teacher_logits = teacher_outputs.logits
         T = self.temperature
-        kd_logit_loss = F.kl_div(
-            F.log_softmax(student_logits / T, dim=-1),
-            F.softmax(teacher_logits / T, dim=-1),
-            reduction="batchmean",
-        ) * (T ** 2)
 
-        # 2) Hidden State KD: MSE on all decoder layers
+        if self.use_akl and self.total_train_steps and self.total_train_steps > 0:
+            # Adaptive KL (AKL): FKL + RKL 동적 결합
+            # 학습 초반: FKL 위주 (분포 head 집중) → 후반: RKL 위주 (분포 tail 집중)
+            step_ratio = min(self._current_step / self.total_train_steps, 1.0)
+            beta = 1.0 - step_ratio  # 1.0→0.0
+
+            s_log_prob = F.log_softmax(student_logits / T, dim=-1)
+            t_prob = F.softmax(teacher_logits / T, dim=-1)
+            t_log_prob = F.log_softmax(teacher_logits / T, dim=-1)
+            s_prob = F.softmax(student_logits / T, dim=-1)
+
+            fkl = F.kl_div(s_log_prob, t_prob, reduction="batchmean")
+            rkl = F.kl_div(t_log_prob, s_prob, reduction="batchmean")
+            kd_logit_loss = (beta * fkl + (1.0 - beta) * rkl) * (T ** 2)
+        else:
+            # Standard Forward KLD
+            kd_logit_loss = F.kl_div(
+                F.log_softmax(student_logits / T, dim=-1),
+                F.softmax(teacher_logits / T, dim=-1),
+                reduction="batchmean",
+            ) * (T ** 2)
+
+        # ── 2) Hidden State KD ──
         student_hidden = student_outputs.hidden_states[1:]  # skip embedding
         teacher_hidden = teacher_outputs.hidden_states[1:]
-        hidden_loss = sum(
-            F.mse_loss(s.float(), t.float())
-            for s, t in zip(student_hidden, teacher_hidden)
-        ) / len(student_hidden)
 
-        # 3) Combined loss
-        total_loss = (
-            self.alpha_task * task_loss
-            + self.alpha_logit * kd_logit_loss
-            + self.alpha_hidden * hidden_loss
-        )
+        if self.use_cosine_hidden:
+            # Cosine Similarity (scale-invariant, gradient 안정적)
+            hidden_loss = sum(
+                1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
+                for s, t in zip(student_hidden, teacher_hidden)
+            ) / len(student_hidden)
+        else:
+            # MSE (기존 방식)
+            hidden_loss = sum(
+                F.mse_loss(s.float(), t.float())
+                for s, t in zip(student_hidden, teacher_hidden)
+            ) / len(student_hidden)
+
+        # ── 3) Attention Map Transfer ──
+        attn_loss = torch.tensor(0.0, device=student_logits.device)
+        if need_attn:
+            student_attns = student_outputs.attentions
+            teacher_attns = teacher_outputs.attentions
+            num_layers = len(student_attns)
+            attn_loss = sum(
+                F.kl_div(
+                    torch.log(s_attn.float() + 1e-8),
+                    t_attn.float(),
+                    reduction="batchmean",
+                )
+                for s_attn, t_attn in zip(student_attns, teacher_attns)
+            ) / num_layers
+
+        # ── 4) Embedding Output 매칭 ──
+        embed_loss = torch.tensor(0.0, device=student_logits.device)
+        if self.alpha_embed > 0:
+            embed_loss = F.mse_loss(
+                student_outputs.hidden_states[0].float(),
+                teacher_outputs.hidden_states[0].float(),
+            )
+
+        # ── 5) Combined loss ──
+        if self.use_dynamic_alpha and self.alpha_hidden > 0:
+            # 동적 α (Minitron): logit loss / hidden loss 비율로 가중치 자동 조절
+            alpha_dynamic = kd_logit_loss.detach() / (hidden_loss.detach() + 1e-8)
+            total_loss = (
+                self.alpha_task * task_loss
+                + kd_logit_loss
+                + alpha_dynamic * hidden_loss
+                + self.alpha_attn * attn_loss
+                + self.alpha_embed * embed_loss
+            )
+        else:
+            total_loss = (
+                self.alpha_task * task_loss
+                + self.alpha_logit * kd_logit_loss
+                + self.alpha_hidden * hidden_loss
+                + self.alpha_attn * attn_loss
+                + self.alpha_embed * embed_loss
+            )
 
         # 개별 loss를 로깅용으로 저장
         self._kd_metrics = {
@@ -516,6 +619,14 @@ class KDTrainer(Trainer):
             "kd_logit_loss": kd_logit_loss.detach().item(),
             "hidden_loss": hidden_loss.detach().item(),
         }
+        if need_attn:
+            self._kd_metrics["attn_loss"] = attn_loss.detach().item()
+        if self.alpha_embed > 0:
+            self._kd_metrics["embed_loss"] = embed_loss.detach().item()
+        if self.use_akl and self.total_train_steps and self.total_train_steps > 0:
+            self._kd_metrics["akl_beta"] = beta
+        if self.use_dynamic_alpha and self.alpha_hidden > 0:
+            self._kd_metrics["dynamic_alpha"] = alpha_dynamic.item()
 
         return (total_loss, student_outputs) if return_outputs else total_loss
 
@@ -539,12 +650,21 @@ if __name__ == "__main__":
     print("Step 1: 모델 로드 + 아키텍처 정보 출력")
     print("=" * 60)
 
+    if os.path.isdir(LOCAL_MODEL_DIR) and os.path.isfile(os.path.join(LOCAL_MODEL_DIR, "config.json")):
+        model_path = LOCAL_MODEL_DIR
+        print(f"  로컬 모델 사용: {LOCAL_MODEL_DIR}")
+    else:
+        os.makedirs(LOCAL_MODEL_DIR, exist_ok=True)
+        print(f"  모델 다운로드: {MODEL_ID} → {LOCAL_MODEL_DIR}")
+        from huggingface_hub import snapshot_download
+        snapshot_download(repo_id=MODEL_ID, local_dir=LOCAL_MODEL_DIR)
+        model_path = LOCAL_MODEL_DIR
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
+        model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
     )
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
     # 아키텍처 정보 읽기
     hidden_size = model.config.hidden_size
@@ -684,14 +804,22 @@ if __name__ == "__main__":
         print("Step 6: Knowledge Distillation Recovery")
         print("=" * 60)
 
-        # 6-1. Teacher 모델 로드 (프루닝 전 원본)
-        print("  Teacher 모델 로드 (원본 모델)...")
+        # 6-1. Teacher 모델 로드
+        if os.path.isdir(TEACHER_LOCAL_MODEL_DIR) and os.path.isfile(os.path.join(TEACHER_LOCAL_MODEL_DIR, "config.json")):
+            teacher_path = TEACHER_LOCAL_MODEL_DIR
+            print(f"  Teacher 로컬 모델 사용: {TEACHER_LOCAL_MODEL_DIR}")
+        else:
+            os.makedirs(TEACHER_LOCAL_MODEL_DIR, exist_ok=True)
+            print(f"  Teacher 모델 다운로드: {TEACHER_MODEL_ID} → {TEACHER_LOCAL_MODEL_DIR}")
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id=TEACHER_MODEL_ID, local_dir=TEACHER_LOCAL_MODEL_DIR)
+            teacher_path = TEACHER_LOCAL_MODEL_DIR
         teacher_model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID, torch_dtype=torch.bfloat16, device_map="auto"
+            teacher_path, torch_dtype=torch.bfloat16, device_map="auto"
         )
         teacher_model.eval()
         teacher_model.requires_grad_(False)
-        print(f"  Teacher 모델 로드 완료: {MODEL_ID}")
+        print(f"  Teacher 모델 로드 완료: {TEACHER_MODEL_ID}")
 
         # 6-2. 학습 데이터 준비
         print("  학습 데이터 준비...")
@@ -785,12 +913,22 @@ if __name__ == "__main__":
             disable_tqdm=False,
         )
 
+        # total_train_steps 계산 (AKL step_ratio용)
+        steps_per_epoch = max(len(train_ds) // (KD_BATCH_SIZE * KD_GRAD_ACCUM), 1)
+        total_train_steps = steps_per_epoch * KD_EPOCHS
+
         trainer = KDTrainer(
             teacher_model=teacher_model,
             temperature=KD_TEMPERATURE,
             alpha_task=KD_ALPHA_TASK,
             alpha_logit=KD_ALPHA_LOGIT,
             alpha_hidden=KD_ALPHA_HIDDEN,
+            alpha_attn=KD_ALPHA_ATTN,
+            alpha_embed=KD_ALPHA_EMBED,
+            use_cosine_hidden=KD_USE_COSINE_HIDDEN,
+            use_akl=KD_USE_AKL,
+            use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
+            total_train_steps=total_train_steps,
             model=model,
             args=training_args,
             train_dataset=train_ds,
@@ -798,8 +936,22 @@ if __name__ == "__main__":
         )
 
         mode_str = f"LoRA(rank={LORA_RANK})" if USE_LORA else f"Direct({direct_target})"
-        print(f"  KD 학습 시작 [{mode_str}] (T={KD_TEMPERATURE}, alpha_task={KD_ALPHA_TASK}, "
-              f"alpha_logit={KD_ALPHA_LOGIT}, alpha_hidden={KD_ALPHA_HIDDEN}, lr={learning_rate})...")
+        kd_features = []
+        if KD_USE_AKL:
+            kd_features.append("AKL")
+        if KD_USE_COSINE_HIDDEN:
+            kd_features.append("CosineHidden")
+        if KD_USE_DYNAMIC_ALPHA:
+            kd_features.append("DynamicAlpha")
+        if KD_ALPHA_ATTN > 0:
+            kd_features.append(f"AttnTransfer(α={KD_ALPHA_ATTN})")
+        if KD_ALPHA_EMBED > 0:
+            kd_features.append(f"EmbedMatch(α={KD_ALPHA_EMBED})")
+        features_str = ", ".join(kd_features) if kd_features else "none"
+        print(f"  KD 학습 시작 [{mode_str}] (T={KD_TEMPERATURE}, α_task={KD_ALPHA_TASK}, "
+              f"α_logit={KD_ALPHA_LOGIT}, α_hidden={KD_ALPHA_HIDDEN}, lr={learning_rate})")
+        print(f"  개선 기법: {features_str}")
+        print(f"  총 학습 스텝: {total_train_steps}")
         trainer.train()
         print("  KD 학습 완료!")
 
@@ -879,6 +1031,11 @@ if __name__ == "__main__":
         "kd_alpha_task": KD_ALPHA_TASK if KD_ENABLED else None,
         "kd_alpha_logit": KD_ALPHA_LOGIT if KD_ENABLED else None,
         "kd_alpha_hidden": KD_ALPHA_HIDDEN if KD_ENABLED else None,
+        "kd_alpha_attn": KD_ALPHA_ATTN if KD_ENABLED else None,
+        "kd_alpha_embed": KD_ALPHA_EMBED if KD_ENABLED else None,
+        "kd_use_cosine_hidden": KD_USE_COSINE_HIDDEN if KD_ENABLED else None,
+        "kd_use_akl": KD_USE_AKL if KD_ENABLED else None,
+        "kd_use_dynamic_alpha": KD_USE_DYNAMIC_ALPHA if KD_ENABLED else None,
         # Training mode info
         "use_lora": USE_LORA if KD_ENABLED else None,
         "lora_rank": LORA_RANK if (KD_ENABLED and USE_LORA) else None,
@@ -917,6 +1074,18 @@ if __name__ == "__main__":
         else:
             dt_mods = DIRECT_TRAIN_MODULES_ALL if PRUNE_ATTN_HEADS else DIRECT_TRAIN_MODULES_FFN
             kd_info = f"Direct({dt_mods}, lr={DIRECT_LR}), T={KD_TEMPERATURE}, epochs={KD_EPOCHS}"
+        kd_improvements = []
+        if KD_USE_AKL:
+            kd_improvements.append("AKL")
+        if KD_USE_COSINE_HIDDEN:
+            kd_improvements.append("CosineHidden")
+        if KD_USE_DYNAMIC_ALPHA:
+            kd_improvements.append("DynamicAlpha")
+        if KD_ALPHA_ATTN > 0:
+            kd_improvements.append("AttnTransfer")
+        if KD_ALPHA_EMBED > 0:
+            kd_improvements.append("EmbedMatch")
+        kd_info += f" + [{', '.join(kd_improvements)}]" if kd_improvements else ""
     else:
         kd_info = "비활성화"
     print(f"  KD 복구:            {kd_info}")

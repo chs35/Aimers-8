@@ -41,6 +41,7 @@ except ImportError:
 
 # ── 모델 & 데이터셋 ──
 MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
+LOCAL_MODEL_DIR = os.path.join("models", MODEL_ID.split("/")[-1])
 DATASET_ID = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
 SAVE_DIR = "EXAONE-4.0-1.2B-LayerPruned-LoRA"
@@ -255,12 +256,21 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Step 1: 모델 및 토크나이저 로드")
     print("=" * 60)
+    if os.path.isdir(LOCAL_MODEL_DIR) and os.path.isfile(os.path.join(LOCAL_MODEL_DIR, "config.json")):
+        model_path = LOCAL_MODEL_DIR
+        print(f"  로컬 모델 사용: {LOCAL_MODEL_DIR}")
+    else:
+        os.makedirs(LOCAL_MODEL_DIR, exist_ok=True)
+        print(f"  모델 다운로드: {MODEL_ID} → {LOCAL_MODEL_DIR}")
+        from huggingface_hub import snapshot_download
+        snapshot_download(repo_id=MODEL_ID, local_dir=LOCAL_MODEL_DIR)
+        model_path = LOCAL_MODEL_DIR
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
+        model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
     )
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
     num_layers = len(model.model.layers)
     total_params = sum(p.numel() for p in model.parameters())
