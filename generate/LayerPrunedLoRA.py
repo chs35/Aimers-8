@@ -44,7 +44,7 @@ MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
 LOCAL_MODEL_DIR = os.path.join("models", MODEL_ID.split("/")[-1])
 DATASET_ID = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
-SAVE_DIR = "EXAONE-4.0-1.2B-LayerPruned-LoRA"
+SAVE_DIR = "models/EXAONE-4.0-1.2B-LayerPruned-LoRA"
 
 # ── Layer Pruning (Shortened LLaMA) ──
 NUM_LAYERS_TO_REMOVE = 3           # 제거할 레이어 수 (EXAONE 1.2B = 30 레이어)
@@ -438,18 +438,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Step 5: 결과 저장")
     print("=" * 60)
-
-    # .gitignore 처리
-    GITIGNORE_PATH = ".gitignore"
-    if os.path.exists(GITIGNORE_PATH):
-        with open(GITIGNORE_PATH, "r") as f:
-            gitignore_content = f.read()
-        if SAVE_DIR not in gitignore_content:
-            with open(GITIGNORE_PATH, "a") as f:
-                f.write(f"\n{SAVE_DIR}\n")
-    else:
-        with open(GITIGNORE_PATH, "w") as f:
-            f.write(f"{SAVE_DIR}\n")
 
     model.save_pretrained(SAVE_DIR)
     tokenizer.save_pretrained(SAVE_DIR)

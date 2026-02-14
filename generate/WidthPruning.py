@@ -72,13 +72,13 @@ def _import_peft():
 # ╚══════════════════════════════════════════════════════════════╝
 
 # ── 모델 & 데이터셋 ──
-MODEL_ID = "EXAONE-4.0-1.2B-FP8"
+MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
 LOCAL_MODEL_DIR = os.path.join("models", MODEL_ID.split("/")[-1])
 TEACHER_MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"  # KD teacher 모델 (None이면 MODEL_ID와 동일)
 TEACHER_LOCAL_MODEL_DIR = os.path.join("models", TEACHER_MODEL_ID.split("/")[-1])
 DATASET_ID = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
-SAVE_DIR = "EXAONE-4.0-1.2B-WidthPruned-KD-Trial9"
+SAVE_DIR = "models/EXAONE-4.0-1.2B-WidthPruned-KD-Trial10"
 
 # ── Width Pruning (FFN) ──
 PRUNE_FFN = True
@@ -144,7 +144,7 @@ DIRECT_TRAIN_MODULES_ALL = [       # Attention + FFN 모두 프루닝 시 직접
 # ── 공통 학습 설정 ──
 KD_LR = 2e-4                       # 학습률 (LoRA 모드)
 DIRECT_LR = 5e-5                   # 학습률 (Direct 모드, LoRA보다 낮게 설정)
-KD_EPOCHS = 12                      # 에폭 수, 기본은 3, 늘리면 성능 상승 / 과적합 가능성 상승 및 시간 소요 상승
+KD_EPOCHS = 5                      # 에폭 수, 기본은 3, 늘리면 성능 상승 / 과적합 가능성 상승 및 시간 소요 상승
 KD_BATCH_SIZE = 4                  # per-device 배치 크기 (GPU 메모리에 따라 조절)
 KD_GRAD_ACCUM = 8                  # gradient accumulation (effective batch = 4*8=32)
 NUM_TRAIN_SAMPLES = 1000           # KD 학습용 샘플 수
@@ -985,22 +985,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Step 7: 최종 모델 저장")
     print("=" * 60)
-
-    # .gitignore 처리
-    GITIGNORE_PATH = ".gitignore"
-    if os.path.exists(GITIGNORE_PATH):
-        with open(GITIGNORE_PATH, "r") as f:
-            gitignore_content = f.read()
-        if SAVE_DIR not in gitignore_content:
-            with open(GITIGNORE_PATH, "a") as f:
-                f.write(f"\n{SAVE_DIR}\n")
-            print(f"  '{SAVE_DIR}'을(를) .gitignore에 추가했습니다.")
-        else:
-            print(f"  '{SAVE_DIR}'은(는) 이미 .gitignore에 있습니다.")
-    else:
-        with open(GITIGNORE_PATH, "w") as f:
-            f.write(f"{SAVE_DIR}\n")
-        print(f"  .gitignore 파일을 생성하고 '{SAVE_DIR}'을(를) 추가했습니다.")
 
     # 모델 저장
     model.save_pretrained(SAVE_DIR)

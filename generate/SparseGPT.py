@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+SparseGPT Pruning Script - Optimized for Current Environment
+
+SparseGPT 기법의 핵심:
+- Layer-wise unstructured pruning
+- Calibration data를 사용한 Hessian 기반 weight 제거
+- 모델 성능 유지하면서 파라미터 감소
+"""
+
 import os
 import json
 import torch
@@ -6,21 +16,38 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from llmcompressor import oneshot
 from llmcompressor.modifiers.pruning.sparsegpt import SparseGPTModifier
 
+# ============================================================
 # 1. 설정값 정의
+# ============================================================
 MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
 LOCAL_MODEL_DIR = os.path.join("models", MODEL_ID.split("/")[-1])
 DATASET_ID = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
-NUM_CALIBRATION_SAMPLES = 256
-MAX_SEQUENCE_LENGTH = 512
 
-# 프루닝 설정
+# Calibration 설정 (성능에 큰 영향)
+NUM_CALIBRATION_SAMPLES = 512  # 256 -> 512로 증가
+MAX_SEQUENCE_LENGTH = 2048     # 512 -> 2048로 증가 (더 긴 컨텍스트)
+
+# Pruning 설정
 SPARSITY = 0.5  # 50% unstructured sparsity
+SAVE_DIR = "models/EXAONE-4.0-1.2B-SparseGPT-v2"
 
 # 환경 설정
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-print("--- 1. 모델 및 토크나이저 불러오기 ---")
+print("=" * 60)
+print("SparseGPT Pruning - Optimized Version")
+print("=" * 60)
+print(f"Model: {MODEL_ID}")
+print(f"Target Sparsity: {SPARSITY * 100}%")
+print(f"Calibration Samples: {NUM_CALIBRATION_SAMPLES}")
+print(f"Max Sequence Length: {MAX_SEQUENCE_LENGTH}")
+print("=" * 60)
+
+# ============================================================
+# 2. 모델 및 토크나이저 불러오기
+# ============================================================
+print("\n[1/5] 모델 및 토크나이저 불러오기...")
 if os.path.isdir(LOCAL_MODEL_DIR) and os.path.isfile(os.path.join(LOCAL_MODEL_DIR, "config.json")):
     model_path = LOCAL_MODEL_DIR
     print(f"  로컬 모델 사용: {LOCAL_MODEL_DIR}")
@@ -33,43 +60,97 @@ else:
 model = AutoModelForCausalLM.from_pretrained(
     model_path,
     torch_dtype=torch.bfloat16,
-    device_map="auto"
+    device_map="auto",
+    trust_remote_code=True
 )
-tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(
+    model_path,
+    trust_remote_code=True
+)
 
-print("--- 2. 데이터셋 준비 (메모리 최적화 및 객체 복구) ---")
-# 스트리밍으로 데이터를 가져와서 리스트에 담습니다.
-raw_ds_iter = load_dataset(DATASET_ID, split=DATASET_SPLIT, streaming=True)
+# Tokenizer에 pad_token 설정 (없으면 eos_token 사용)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+print(f"✓ 모델 로딩 완료")
+print(f"  - Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+print(f"  - Trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+
+# ============================================================
+# 3. Calibration 데이터셋 준비
+# ============================================================
+print(f"\n[2/5] Calibration 데이터셋 준비...")
+print(f"  - Dataset: {DATASET_ID}")
+print(f"  - Loading {NUM_CALIBRATION_SAMPLES} samples...")
+
+# 스트리밍 방식으로 데이터 로드
+raw_ds_iter = load_dataset(
+    DATASET_ID,
+    split=DATASET_SPLIT,
+    streaming=True
+)
 sampled_data = list(raw_ds_iter.take(NUM_CALIBRATION_SAMPLES))
-
-# 리스트를 다시 HuggingFace Dataset 객체로 변환하여 column_names 속성을 살려줍니다.
 ds = Dataset.from_list(sampled_data)
 
+print(f"✓ {len(sampled_data)} 샘플 로드 완료")
+
+# 데이터 전처리 함수
 def preprocess(example):
-    # 채팅 템플릿 적용
-    return {
-        "text": tokenizer.apply_chat_template(
-            example["conversations"],
-            add_generation_prompt=True,
-            tokenize=False
-        )
-    }
+    """
+    대화를 텍스트로 변환
+    - 채팅 템플릿 적용
+    - add_generation_prompt=False (calibration에는 불필요)
+    """
+    text = tokenizer.apply_chat_template(
+        example["conversations"],
+        add_generation_prompt=False,  # Calibration에는 generation prompt 불필요
+        tokenize=False
+    )
+    return {"text": text}
 
 # 전처리 적용
-ds = ds.map(preprocess)
+print("  - Preprocessing samples...")
+ds = ds.map(preprocess, remove_columns=ds.column_names)
 
-print(f"--- 3. 프루닝(SparseGPT) 레시피 설정 (Sparsity: {SPARSITY}) ---")
+# 샘플 통계 확인
+sample_lengths = []
+for sample in ds.select(range(min(10, len(ds)))):
+    tokens = tokenizer(sample["text"], truncation=False)
+    sample_lengths.append(len(tokens["input_ids"]))
+
+print(f"✓ 전처리 완료")
+print(f"  - Average length (first 10 samples): {sum(sample_lengths) / len(sample_lengths):.0f} tokens")
+print(f"  - Max length will be: {MAX_SEQUENCE_LENGTH} tokens")
+
+# ============================================================
+# 4. SparseGPT Recipe 설정
+# ============================================================
+print(f"\n[3/5] SparseGPT Recipe 설정...")
 
 recipe = [
     SparseGPTModifier(
         sparsity=SPARSITY,
-        targets="Linear",
-        ignore=["lm_head"],
+        targets="Linear",  # 모든 Linear 레이어 대상
+        ignore=["lm_head"],  # lm_head는 제외 (출력 레이어)
+        sequential_update=True,  # Layer-wise sequential pruning
+        dampening_frac=0.01,  # Hessian 안정화
+        block_size=128,  # 블록 단위 처리
     )
 ]
 
-print("--- 4. 프루닝 실행 (Oneshot) ---")
-# SparseGPT 알고리즘 가동
+print(f"✓ Recipe 설정 완료")
+print(f"  - Sparsity: {SPARSITY * 100}%")
+print(f"  - Targets: All Linear layers (except lm_head)")
+print(f"  - Sequential update: True (layer-wise)")
+print(f"  - Dampening: 0.01")
+print(f"  - Block size: 128")
+
+# ============================================================
+# 5. Pruning 실행
+# ============================================================
+print(f"\n[4/5] SparseGPT Pruning 실행...")
+print("  (이 작업은 수 분이 소요될 수 있습니다)")
+
 oneshot(
     model=model,
     dataset=ds,
@@ -78,40 +159,61 @@ oneshot(
     num_calibration_samples=NUM_CALIBRATION_SAMPLES,
 )
 
-print("--- 5. 결과 저장 ---")
-# 프루닝된 모델 저장
-SAVE_DIR = "EXAONE-4.0-1.2B-SparseGPT"
+print("✓ Pruning 완료")
 
-# .gitignore에 SAVE_DIR 추가 (없는 경우)
-GITIGNORE_PATH = ".gitignore"
-if os.path.exists(GITIGNORE_PATH):
-    with open(GITIGNORE_PATH, "r") as f:
-        gitignore_content = f.read()
+# Pruning 후 통계
+total_params = sum(p.numel() for p in model.parameters())
+zero_params = sum((p == 0).sum().item() for p in model.parameters())
+actual_sparsity = zero_params / total_params
 
-    if SAVE_DIR not in gitignore_content:
-        with open(GITIGNORE_PATH, "a") as f:
-            f.write(f"\n{SAVE_DIR}\n")
-        print(f"'{SAVE_DIR}'을(를) .gitignore에 추가했습니다.")
-    else:
-        print(f"'{SAVE_DIR}'은(는) 이미 .gitignore에 있습니다.")
-else:
-    with open(GITIGNORE_PATH, "w") as f:
-        f.write(f"{SAVE_DIR}\n")
-    print(f".gitignore 파일을 생성하고 '{SAVE_DIR}'을(를) 추가했습니다.")
+print(f"  - Total parameters: {total_params:,}")
+print(f"  - Zero parameters: {zero_params:,}")
+print(f"  - Actual sparsity: {actual_sparsity * 100:.2f}%")
 
+# ============================================================
+# 6. 모델 저장
+# ============================================================
+print(f"\n[5/5] 모델 저장...")
+
+# 모델 저장 (vLLM 호환 형식)
 model.save_pretrained(SAVE_DIR, save_compressed=False)
 tokenizer.save_pretrained(SAVE_DIR)
 
-# vLLM 호환성을 위해 quantization_config 제거
+# vLLM 호환성: quantization_config 제거
 config_path = os.path.join(SAVE_DIR, "config.json")
 with open(config_path, "r") as f:
     config = json.load(f)
 
 if "quantization_config" in config:
-    print("vLLM 호환성을 위해 quantization_config를 제거합니다...")
+    print("  - Removing quantization_config for vLLM compatibility...")
     del config["quantization_config"]
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    print("quantization_config가 제거되었습니다.")
 
-print(f"축하합니다! 프루닝 모델이 '{SAVE_DIR}'에 저장되었습니다.")
+# 메타데이터 저장
+metadata = {
+    "model_id": MODEL_ID,
+    "method": "SparseGPT",
+    "target_sparsity": SPARSITY,
+    "actual_sparsity": actual_sparsity,
+    "calibration_samples": NUM_CALIBRATION_SAMPLES,
+    "max_seq_length": MAX_SEQUENCE_LENGTH,
+    "dataset": DATASET_ID,
+    "total_parameters": total_params,
+    "zero_parameters": zero_params,
+}
+
+with open(os.path.join(SAVE_DIR, "pruning_metadata.json"), "w") as f:
+    json.dump(metadata, f, indent=2)
+
+print(f"✓ 모델 저장 완료: {SAVE_DIR}")
+print(f"  - Model files saved")
+print(f"  - Metadata saved to pruning_metadata.json")
+
+print("\n" + "=" * 60)
+print("✅ SparseGPT Pruning 완료!")
+print("=" * 60)
+print(f"저장 위치: {SAVE_DIR}")
+print(f"실제 Sparsity: {actual_sparsity * 100:.2f}%")
+print(f"파라미터 감소: {zero_params:,} / {total_params:,}")
+print("=" * 60)
