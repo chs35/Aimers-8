@@ -1,0 +1,12 @@
+# GPTQ 양자화 추가 의존성
+# Dockerfile + requirements.txt 환경에서 추가로 필요한 패키지
+# 설치: pip install -r experiments/quantize_gptq.txt --no-build-isolation
+
+# 빌드 도구 (gptqmodel 빌드에 필요)
+setuptools>=75.0.0
+wheel>=0.45.0
+
+# GPTQModel (최신 버전, Dockerfile 환경 호환 확인됨)
+# 요구사항: torch>=2.4.1, transformers>=4.51.2, accelerate>=1.6.0
+# Dockerfile: torch==2.9.0, transformers==4.57.3, accelerate==1.10.1 ✓
+gptqmodel==5.6.12

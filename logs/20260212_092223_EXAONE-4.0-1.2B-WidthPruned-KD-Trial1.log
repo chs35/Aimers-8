@@ -1,0 +1,19 @@
+
+============================================================
+Run Name: 20260212_092223_EXAONE-4.0-1.2B-WidthPruned-KD-Trial1
+Model: EXAONE-4.0-1.2B-WidthPruned-KD-Trial1
+Tasks: gsm8k
+enable_thinking: False
+vLLM Settings: {'tensor_parallel_size': 1, 'gpu_memory_utilization': 0.85, 'max_gen_toks': 16384, 'trust_remote_code': True, 'enforce_eager': True}
+model_args: pretrained=EXAONE-4.0-1.2B-WidthPruned-KD-Trial1,tensor_parallel_size=1,gpu_memory_utilization=0.85,max_gen_toks=16384,trust_remote_code=true,enforce_eager=true,enable_thinking=false
+Log: logs/20260212_092223_EXAONE-4.0-1.2B-WidthPruned-KD-Trial1.log
+Result: results/20260212_092223_EXAONE-4.0-1.2B-WidthPruned-KD-Trial1.json
+============================================================
+
+Loading model...
+
+============================================================
+Running task [1/1]: gsm8k
+============================================================
+WARNING 02-12 09:22:24 [__init__.py:27] The vLLM package was not found, so its version could not be inspected. This may cause platform detection to fail.
+WARNING 02-12 09:22:24 [__init__.py:27] The vLLM package was not found, so its version could not be inspected. This may cause platform detection to fail.
