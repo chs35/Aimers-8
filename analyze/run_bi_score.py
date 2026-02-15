@@ -415,8 +415,8 @@ def parse_args() -> argparse.Namespace:
         help="캘리브레이션 샘플 수 (기본값: 512)",
     )
     parser.add_argument(
-        "--max-length", type=int, default=2048,
-        help="최대 시퀀스 길이 (기본값: 2048)",
+        "--max-length", type=int, default=16384,
+        help="최대 시퀀스 길이 (기본값: 16384)",
     )
     parser.add_argument(
         "--output-dir", type=str, default=str(RESULTS_DIR),
