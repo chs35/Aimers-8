@@ -6,17 +6,23 @@ GSM8K 벤치마크 실행 스크립트 - lm-eval-harness (vLLM 백엔드)
   - CSV: results/{MMDD}/{HHMMSS}_{model_name}_{benchmark}.csv
   - Log: results/logs/{MMDDHHMMSS}_{model_name}_{benchmark}.log
 """
+import os
+
+# vLLM 엔진코어 subprocess에서도 DEBUG 로그 출력
+# 반드시 vllm import 전에 설정해야 함
+os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+
 import argparse
 import csv
 import json
 import logging
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 
-import lm_eval
-from lm_eval.utils import setup_logging as lm_eval_setup_logging
+# lm_eval은 vLLM 로깅 설정 이후에 lazy import 한다 (setup_logging_all 참조)
 
 
 # ── 대회 고정 vLLM 서빙 설정 (README.md L151~169) ──
@@ -39,8 +45,8 @@ CSV_COLUMNS = [
     "질문",
     "정답",
     "출력물",
-    "파싱된정답(short)",
-    "파싱된정답(long)",
+    "파싱된정답(strict)",
+    "파싱된정답(flexible)",
     "정답여부",
 ]
 
@@ -63,14 +69,101 @@ def generate_paths(
     return csv_path, log_path
 
 
+def _configure_vllm_logging(log_file_path: Path) -> None:
+    """vLLM 전용 로깅 설정 파일을 생성하고 VLLM_LOGGING_CONFIG_PATH로 지정한다.
+
+    vLLM은 자체 로거(propagate=False)를 stdout으로 출력하므로,
+    Python root logger의 FileHandler로는 캡처할 수 없다.
+    대신 vLLM이 읽는 logging config에 직접 FileHandler를 주입한다.
+    엔진코어 subprocess도 이 환경변수를 상속하여 동일 설정이 적용된다.
+    """
+    config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "vllm": {
+                "format": "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            }
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "vllm",
+                "level": "DEBUG",
+                "stream": "ext://sys.stdout",
+            },
+            "file": {
+                "class": "logging.FileHandler",
+                "formatter": "vllm",
+                "level": "DEBUG",
+                "filename": str(log_file_path.resolve()),
+                "encoding": "utf-8",
+            },
+        },
+        "loggers": {
+            "vllm": {
+                "handlers": ["console", "file"],
+                "level": "DEBUG",
+                "propagate": False,
+            }
+        },
+    }
+
+    config_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, prefix="vllm_log_",
+    )
+    json.dump(config, config_file)
+    config_file.close()
+
+    os.environ["VLLM_LOGGING_CONFIG_PATH"] = config_file.name
+
+
+def _ensure_vllm_file_handler(log_file_path: Path) -> None:
+    """vLLM 로거에 FileHandler가 없으면 직접 추가한다 (main process 보험).
+
+    VLLM_LOGGING_CONFIG_PATH가 정상 적용되었다면 FileHandler가 이미 존재하므로
+    중복 추가를 방지한다. 적용되지 않았을 경우에만 수동 주입한다.
+    """
+    fmt = logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    vllm_logger = logging.getLogger("vllm")
+
+    has_file_handler = any(
+        isinstance(h, logging.FileHandler) for h in vllm_logger.handlers
+    )
+    if not has_file_handler:
+        fh = logging.FileHandler(str(log_file_path), encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(fmt)
+        vllm_logger.addHandler(fh)
+
+    vllm_logger.setLevel(logging.DEBUG)
+
+
 def setup_logging_all(log_file_path: Path) -> logging.Logger:
-    """모든 로거를 DEBUG 레벨로 설정하고 콘솔+파일 핸들러를 구성한다."""
+    """모든 로거를 DEBUG 레벨로 설정한다.
+
+    1) vLLM: VLLM_LOGGING_CONFIG_PATH로 FileHandler 주입 (subprocess 포함)
+    2) vLLM main process: import 후 FileHandler 직접 주입 (보험)
+    3) lm_eval + 기타: root logger FileHandler로 캡처
+    """
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # lm_eval 내부 로깅 초기화 (콘솔 핸들러 설정)
+    # 1) vLLM 로깅 설정 (lm_eval/vllm import 전에 환경변수 설정)
+    #    엔진코어 subprocess도 이 환경변수를 상속받아 동일 config 적용
+    _configure_vllm_logging(log_file_path)
+
+    # 2) lm_eval 초기화 (이 시점에서 vllm import → 위 config 적용됨)
+    from lm_eval.utils import setup_logging as lm_eval_setup_logging
     lm_eval_setup_logging("DEBUG")
 
-    # 루트 로거에 파일 핸들러 추가 → 모든 라이브러리 로그가 파일에 기록됨
+    # 3) vLLM 로거에 FileHandler가 없으면 직접 추가 (main process 보험)
+    _ensure_vllm_file_handler(log_file_path)
+
+    # 4) root logger FileHandler (lm_eval, datasets, transformers 등 캡처)
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
 
@@ -82,16 +175,17 @@ def setup_logging_all(log_file_path: Path) -> logging.Logger:
     ))
     root_logger.addHandler(file_handler)
 
-    # vLLM 엔진 코어 로거를 명시적으로 DEBUG 레벨로 설정
-    for name in [
-        "vllm", "vllm.engine", "vllm.worker",
-        "vllm.model_executor", "vllm.core", "vllm.config",
-    ]:
-        logging.getLogger(name).setLevel(logging.DEBUG)
-
     logger = logging.getLogger("run_gsm8k")
     logger.setLevel(logging.DEBUG)
     logger.info(f"Log file: {log_file_path}")
+    logger.info(f"VLLM_LOGGING_CONFIG_PATH: {os.environ.get('VLLM_LOGGING_CONFIG_PATH', 'NOT SET')}")
+    logger.info(f"VLLM_LOGGING_LEVEL: {os.environ.get('VLLM_LOGGING_LEVEL', 'NOT SET')}")
+
+    # vLLM 로거 핸들러 확인 (디버깅용)
+    vllm_logger = logging.getLogger("vllm")
+    logger.info(f"vllm logger handlers: {vllm_logger.handlers}")
+    logger.info(f"vllm logger level: {logging.getLevelName(vllm_logger.level)}")
+
     return logger
 
 
@@ -169,6 +263,8 @@ def run_benchmark(
     logger: logging.Logger,
 ) -> dict:
     """lm_eval.simple_evaluate()로 벤치마크를 실행한다."""
+    import lm_eval
+
     model_args_str = build_model_args(model_path)
 
     logger.info("=" * 60)
@@ -215,13 +311,11 @@ def extract_samples_to_csv(
 ) -> None:
     """평가 결과에서 샘플 데이터를 추출하여 CSV로 저장한다.
 
-    컬럼: 질문, 정답, 출력물, 파싱된정답(short), 파싱된정답(long), 정답여부
-      - 질문:             doc["question"]
-      - 정답:             target (정답 숫자, e.g. "12")
-      - 출력물:           모델 원본 생성 텍스트
-      - 파싱된정답(short): lm-eval 필터가 추출한 모델 답 (숫자)
-      - 파싱된정답(long):  정답 풀이 전문 (doc["answer"])
-      - 정답여부:          True / False
+    lm-eval-harness는 필터별로 샘플을 분리 저장한다:
+      "gsm8k,strict-match": [...], "gsm8k,flexible-extract": [...]
+    이를 doc_id 기준으로 머지하여 한 행에 두 필터 결과를 모두 담는다.
+
+    컬럼: 질문, 정답, 출력물, 파싱된정답(strict), 파싱된정답(flexible), 정답여부
     """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -230,38 +324,58 @@ def extract_samples_to_csv(
         logger.warning("결과에 samples 데이터가 없습니다. CSV를 생성하지 않습니다.")
         return
 
+    # 필터별 샘플을 base_task 기준으로 그룹핑
+    # e.g. {"gsm8k": {"strict-match": [...], "flexible-extract": [...]}}
+    task_groups: dict[str, dict[str, list]] = {}
+    for key, task_samples in samples.items():
+        parts = key.split(",", 1)
+        base_task = parts[0]
+        filter_name = parts[1] if len(parts) > 1 else "default"
+        task_groups.setdefault(base_task, {})[filter_name] = task_samples
+
     rows = []
-    for task_name, task_samples in samples.items():
-        for sample in task_samples:
+    for base_task, filters in task_groups.items():
+        strict_samples = filters.get("strict-match", [])
+        flexible_samples = filters.get("flexible-extract", [])
+        # 둘 다 없으면 첫 번째 필터 사용
+        primary_samples = strict_samples or flexible_samples or next(iter(filters.values()), [])
+
+        for i, sample in enumerate(primary_samples):
             doc = sample.get("doc", {})
-
             question = doc.get("question", "")
-            answer_full = doc.get("answer", "")     # 풀이 전문 (#### 포함)
-            target = sample.get("target", "")        # 정답 숫자
+            target = sample.get("target", "")
 
-            # 모델 원본 출력
             resps = sample.get("resps", [[]])
             raw_output = resps[0][0] if resps and resps[0] else ""
 
-            # lm-eval 필터가 파싱한 모델 답 (숫자)
-            filtered = sample.get("filtered_resps", [])
-            parsed_short = filtered[0] if filtered else ""
+            # strict-match 파싱 결과
+            parsed_strict = ""
+            if i < len(strict_samples):
+                f = strict_samples[i].get("filtered_resps", [])
+                parsed_strict = f[0] if f else ""
 
-            # 정답여부: exact_match 등 메트릭 키 탐색
+            # flexible-extract 파싱 결과
+            parsed_flexible = ""
             correct = None
-            for key, val in sample.items():
-                if ("exact_match" in key or "acc" in key) and isinstance(val, (int, float)):
-                    correct = bool(val)
-                    break
+            if i < len(flexible_samples):
+                s = flexible_samples[i]
+                f = s.get("filtered_resps", [])
+                parsed_flexible = f[0] if f else ""
+                # flexible-extract 기준 정답여부
+                for k, v in s.items():
+                    if "exact_match" in k and isinstance(v, (int, float)):
+                        correct = bool(v)
+                        break
+
             if correct is None:
-                correct = str(parsed_short).strip() == str(target).strip()
+                correct = str(parsed_flexible or parsed_strict).strip() == str(target).strip()
 
             rows.append({
                 "질문": question,
                 "정답": target,
                 "출력물": raw_output,
-                "파싱된정답(short)": parsed_short,
-                "파싱된정답(long)": answer_full,
+                "파싱된정답(strict)": parsed_strict,
+                "파싱된정답(flexible)": parsed_flexible,
                 "정답여부": correct,
             })
 
@@ -276,36 +390,12 @@ def extract_samples_to_csv(
 
 
 def print_results(results: dict, logger: logging.Logger) -> None:
-    """평가 결과의 핵심 메트릭을 콘솔에 출력한다."""
-    print("\n" + "=" * 60)
-    print("BENCHMARK RESULTS")
-    print("=" * 60)
+    """lm-eval-harness 표준 테이블 형식으로 결과를 출력한다."""
+    from lm_eval.utils import make_table
 
-    if "results" not in results:
-        logger.warning("결과에 'results' 키가 없습니다.")
-        print("[WARNING] 결과를 파싱할 수 없습니다.")
-        return
-
-    for task_name, task_results in results["results"].items():
-        print(f"\n--- {task_name} ---")
-        for metric_key, metric_value in sorted(task_results.items()):
-            if metric_key.startswith("alias"):
-                continue
-            if isinstance(metric_value, float):
-                print(f"  {metric_key}: {metric_value:.4f}")
-            else:
-                print(f"  {metric_key}: {metric_value}")
-
-    print("=" * 60)
-
-    try:
-        log_results = {k: v for k, v in results.items() if k != "samples"}
-        logger.info(
-            f"Full results (without samples):\n"
-            f"{json.dumps(log_results, indent=2, default=str)}"
-        )
-    except Exception:
-        logger.warning("결과 JSON 직렬화 실패", exc_info=True)
+    table = make_table(results)
+    print(table)
+    logger.info(f"Benchmark results:\n{table}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -350,7 +440,7 @@ def main() -> None:
     output_base = Path(args.output_dir)
     csv_path, log_path = generate_paths(model_name, task_label, output_base)
 
-    # 4. 로깅 초기화
+    # 4. 로깅 초기화 (vLLM config 설정 → lm_eval import → FileHandler)
     logger = setup_logging_all(log_path)
     logger.info(f"Arguments: {vars(args)}")
     logger.info(f"Model: {model_path}")
