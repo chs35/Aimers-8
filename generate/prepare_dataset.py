@@ -293,9 +293,18 @@ def main():
     global_pool = []
     source_counts = {}
 
+    # 필터링 손실을 고려해 기본 샘플 수에 20% 버퍼 추가
+    default_total = sum(c["default_samples"] for c in DATASET_CONFIGS)
+    if default_total * args.scale < total_needed * 1.2:
+        auto_scale = (total_needed * 1.2) / default_total
+        print(f"  [자동 스케일] 기본 풀({default_total})이 필요량({total_needed})에 부족할 수 있어 "
+              f"scale {args.scale:.1f} → {auto_scale:.2f}로 조정")
+        effective_scale = max(args.scale, auto_scale)
+    else:
+        effective_scale = args.scale
+
     for config in DATASET_CONFIGS:
-        num = int(config["default_samples"] * args.scale)
-        # 최소한 total_needed를 채울 수 있도록 스케일 업
+        num = int(config["default_samples"] * effective_scale)
         normalized = load_and_normalize(config, num, seed=args.seed)
         global_pool.extend(normalized)
         source_counts[config["name"]] = len(normalized)
@@ -308,7 +317,7 @@ def main():
     if len(global_pool) < total_needed:
         print(f"\n  [경고] 풀 크기({len(global_pool)}) < 필요 샘플 수({total_needed})")
         print(f"  --scale 값을 높이거나 샘플 수를 줄여주세요.")
-        print(f"  현재 풀 크기만큼 분할합니다.")
+        print(f"  가용한 샘플로 비율 기반 분할합니다.")
     print()
 
     # ── Step 2: 셔플 + 3-Split 분할 ──
@@ -320,9 +329,24 @@ def main():
     random.shuffle(global_pool)
 
     pool_size = len(global_pool)
-    wp_end = min(args.wp_samples, pool_size)
-    kd_end = min(wp_end + args.kd_samples, pool_size)
-    fp8_end = min(kd_end + args.fp8_samples, pool_size)
+
+    if pool_size >= total_needed:
+        # 충분한 경우: 요청한 크기대로 분할
+        wp_end = args.wp_samples
+        kd_end = wp_end + args.kd_samples
+        fp8_end = kd_end + args.fp8_samples
+    else:
+        # 부족한 경우: 비율 기반 분할 (모든 split이 최소 1개씩 받도록)
+        wp_ratio = args.wp_samples / total_needed
+        kd_ratio = args.kd_samples / total_needed
+        wp_count = max(1, int(pool_size * wp_ratio))
+        kd_count = max(1, int(pool_size * kd_ratio))
+        fp8_count = max(1, pool_size - wp_count - kd_count)
+        wp_end = wp_count
+        kd_end = wp_end + kd_count
+        fp8_end = kd_end + fp8_count
+        print(f"  [비율 분할] 풀({pool_size}) < 필요({total_needed}), "
+              f"비율 기반 분할: wp={wp_count}, kd={kd_count}, fp8={fp8_count}")
 
     wp_split = global_pool[:wp_end]
     kd_split = global_pool[wp_end:kd_end]
@@ -349,6 +373,9 @@ def main():
     }
 
     for split_name, split_data in splits.items():
+        if not split_data:
+            print(f"  [경고] {split_name}: 0 샘플 — 건너뜀 (풀이 부족합니다)")
+            continue
         split_dir = os.path.join(dataset_dir, split_name)
         ds = Dataset.from_list(split_data)
         ds.save_to_disk(split_dir)
