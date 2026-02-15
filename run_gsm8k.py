@@ -32,6 +32,7 @@ COMPETITION_VLLM_SETTINGS = {
     "gpu_memory_utilization": 0.85,
     "trust_remote_code": True,
     "dtype": "auto",
+    "enable_thinking": False,
 }
 
 COMPETITION_EVAL_SETTINGS = {
@@ -539,7 +540,7 @@ def collect_engine_info() -> dict:
             info["gpu_name"] = torch.cuda.get_device_name(0)
             info["gpu_count"] = torch.cuda.device_count()
             props = torch.cuda.get_device_properties(0)
-            info["gpu_memory_gb"] = round(props.total_mem / 1e9, 1)
+            info["gpu_memory_gb"] = round(props.total_memory / 1e9, 1)
     except ImportError:
         info["torch_version"] = "not installed"
 
