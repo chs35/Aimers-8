@@ -11,7 +11,7 @@ import os
 
 # vLLM 엔진코어 subprocess에서도 DEBUG 로그 출력
 # 반드시 vllm import 전에 설정해야 함
-os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+os.environ["VLLM_LOGGING_LEVEL"] = "WARNING"
 
 import argparse
 import csv
@@ -85,7 +85,7 @@ def generate_paths(
 #  로깅 + vLLM 메트릭 수집
 # ═══════════════════════════════════════════════════════════
 
-def _configure_vllm_logging(log_file_path: Path) -> None:
+def _configure_vllm_logging(log_file_path: Path, console_level: str = "WARNING") -> None:
     """vLLM 전용 로깅 설정 파일을 생성하고 VLLM_LOGGING_CONFIG_PATH로 지정한다.
 
     vLLM은 자체 로거(propagate=False)를 stdout으로 출력하므로,
@@ -106,7 +106,7 @@ def _configure_vllm_logging(log_file_path: Path) -> None:
             "console": {
                 "class": "logging.StreamHandler",
                 "formatter": "vllm",
-                "level": "DEBUG",
+                "level": console_level,
                 "stream": "ext://sys.stdout",
             },
             "file": {
@@ -120,7 +120,7 @@ def _configure_vllm_logging(log_file_path: Path) -> None:
         "loggers": {
             "vllm": {
                 "handlers": ["console", "file"],
-                "level": "DEBUG",
+                "level": console_level,
                 "propagate": False,
             }
         },
@@ -209,8 +209,8 @@ def _instrument_vllm_generate() -> None:
         pass  # vLLM import 실패시 무시 (메트릭 수집 불가)
 
 
-def setup_logging_all(log_file_path: Path) -> logging.Logger:
-    """모든 로거를 DEBUG 레벨로 설정한다.
+def setup_logging_all(log_file_path: Path, vllm_console_level: str = "WARNING") -> logging.Logger:
+    """모든 로거를 설정한다. 파일은 DEBUG, 콘솔은 vllm_console_level.
 
     1) vLLM: VLLM_LOGGING_CONFIG_PATH로 FileHandler 주입 (subprocess 포함)
     2) lm_eval import → vllm import 트리거
@@ -221,7 +221,7 @@ def setup_logging_all(log_file_path: Path) -> logging.Logger:
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1) vLLM 로깅 설정 (lm_eval/vllm import 전에 환경변수 설정)
-    _configure_vllm_logging(log_file_path)
+    _configure_vllm_logging(log_file_path, console_level=vllm_console_level)
 
     # 2) lm_eval 초기화 (vllm import 트리거 → VLLM_LOGGING_CONFIG_PATH 적용)
     from lm_eval.utils import setup_logging as lm_eval_setup_logging
@@ -689,6 +689,9 @@ def generate_report_json(
                 "limit": args.limit,
             },
             "serving": COMPETITION_VLLM_SETTINGS,
+            "logging": {
+                "vllm_log_level": args.vllm_log_level,
+            },
             "verification": _verify_settings(),
         },
         "engine": collect_engine_info(),
@@ -702,6 +705,73 @@ def generate_report_json(
 
     logger.info(f"JSON report: {json_path}")
     print(f"JSON report: {json_path}")
+
+
+# ═══════════════════════════════════════════════════════════
+#  인터랙티브 설정 선택
+# ═══════════════════════════════════════════════════════════
+
+def _select_from_options(prompt: str, options: list[tuple[str, str]]) -> str:
+    """번호 선택식 인터랙티브 메뉴를 출력하고 선택된 값을 반환한다.
+
+    Args:
+        prompt: 메뉴 제목
+        options: [(표시 텍스트, 반환값), ...] 리스트
+    """
+    print(f"\n{prompt}")
+    for idx, (label, _) in enumerate(options, 1):
+        print(f"  [{idx}] {label}")
+
+    while True:
+        try:
+            choice = input(f"선택 (1-{len(options)}): ").strip()
+            idx = int(choice)
+            if 1 <= idx <= len(options):
+                selected_label, selected_value = options[idx - 1]
+                print(f"  → {selected_label}")
+                return selected_value
+            print(f"  1부터 {len(options)} 사이의 번호를 입력하세요.")
+        except ValueError:
+            print("  유효한 숫자를 입력하세요.")
+        except (KeyboardInterrupt, EOFError):
+            print("\n취소되었습니다.")
+            sys.exit(0)
+
+
+def select_limit_interactive() -> int | None:
+    """샘플 수 제한을 인터랙티브로 선택한다."""
+    value = _select_from_options("샘플 수 설정:", [
+        ("전체 (1319개)", "all"),
+        ("10개 (빠른 테스트)", "10"),
+        ("50개", "50"),
+        ("100개", "100"),
+        ("직접 입력", "custom"),
+    ])
+    if value == "all":
+        return None
+    if value == "custom":
+        while True:
+            try:
+                n = int(input("  샘플 수 입력: ").strip())
+                if n > 0:
+                    return n
+                print("  1 이상의 숫자를 입력하세요.")
+            except ValueError:
+                print("  유효한 숫자를 입력하세요.")
+            except (KeyboardInterrupt, EOFError):
+                print("\n취소되었습니다.")
+                sys.exit(0)
+    return int(value)
+
+
+def select_vllm_log_level_interactive() -> str:
+    """vLLM 로그 레벨을 인터랙티브로 선택한다."""
+    return _select_from_options("vLLM 로그 레벨:", [
+        ("WARNING (권장 - 진행바 표시)", "WARNING"),
+        ("INFO", "INFO"),
+        ("DEBUG (엔진 로그 전체 출력)", "DEBUG"),
+        ("ERROR (에러만 표시)", "ERROR"),
+    ])
 
 
 # ═══════════════════════════════════════════════════════════
@@ -726,11 +796,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--limit", type=int, default=None,
-        help="샘플 수 제한 (디버깅용)",
+        help="샘플 수 제한 (미지정시 인터랙티브 선택)",
     )
     parser.add_argument(
         "--output-dir", type=str, default="results",
         help="결과 저장 디렉토리 (기본값: results/)",
+    )
+    parser.add_argument(
+        "--vllm-log-level", type=str, default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="vLLM 로그 레벨 (미지정시 인터랙티브 선택)",
     )
     return parser.parse_args()
 
@@ -743,22 +818,44 @@ def main() -> None:
     args = parse_args()
     start_timestamp = datetime.now().isoformat()
 
-    # 1. 모델 경로 확정
+    # 0. 인터랙티브 설정 (CLI 미지정 항목)
+    # 0-1. 모델
     model_path = resolve_model_path(args.model, MODELS_DIR)
     model_name = model_path.name
 
-    # 2. 태스크 리스트
+    # 0-2. 샘플 수 제한
+    if args.limit is None:
+        args.limit = select_limit_interactive()
+
+    # 0-3. vLLM 로그 레벨
+    if args.vllm_log_level is None:
+        args.vllm_log_level = select_vllm_log_level_interactive()
+
+    os.environ["VLLM_LOGGING_LEVEL"] = args.vllm_log_level
+
+    # 설정 요약
+    print("\n" + "=" * 50)
+    print("실행 설정 요약:")
+    print("=" * 50)
+    print(f"  모델:          {model_name}")
+    print(f"  태스크:        {args.tasks}")
+    print(f"  샘플 수:       {args.limit if args.limit else '전체 (1319)'}")
+    print(f"  vLLM 로그:     {args.vllm_log_level}")
+    print(f"  num_fewshot:   {args.num_fewshot if args.num_fewshot is not None else '(태스크 기본값)'}")
+    print("=" * 50)
+
+    # 1. 태스크 리스트
     tasks = [t.strip() for t in args.tasks.split(",")]
     task_label = args.tasks.replace(",", "-")
 
-    # 3. 경로 생성 (CSV + JSON + 로그)
+    # 2. 경로 생성 (CSV + JSON + 로그)
     output_base = Path(args.output_dir)
     csv_path, json_path, log_path = generate_paths(
         model_name, task_label, output_base,
     )
 
-    # 4. 로깅 초기화 (vLLM config → lm_eval import → FileHandler → 메트릭 패치)
-    logger = setup_logging_all(log_path)
+    # 3. 로깅 초기화 (vLLM config → lm_eval import → FileHandler → 메트릭 패치)
+    logger = setup_logging_all(log_path, vllm_console_level=args.vllm_log_level)
     logger.info(f"Arguments: {vars(args)}")
     logger.info(f"Model: {model_path}")
     logger.info(f"Tasks: {tasks}")
