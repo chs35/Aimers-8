@@ -1,5 +1,5 @@
 """
-prepare_dataset: 7개 HuggingFace 데이터셋에서 Disjoint 3-Split 생성
+prepare_dataset: 9개 HuggingFace 데이터셋에서 Disjoint 3-Split 생성
 
 파이프라인의 각 단계(Width Pruning, KD Recovery, FP8 Quantization)가
 서로 겹치지 않는(disjoint) 데이터를 사용하도록 보장한다.
@@ -7,13 +7,17 @@ prepare_dataset: 7개 HuggingFace 데이터셋에서 Disjoint 3-Split 생성
 통합 포맷: {"conversations": [{"role":"user","content":"..."}, {"role":"assistant","content":"..."}], "source": "dataset_name"}
 
 데이터셋:
-  1. Open-Orca/SlimOrca (영어 일반)
-  2. microsoft/orca-math-word-problems-200k (영어 수학)
-  3. kuotient/orca-math-korean-preference (한글 수학)
-  4. beomi/KoAlpaca-RealQA (한글 일반)
-  5. TIGER-Lab/MMLU-STEM (영어 STEM)
-  6. daekeun-ml/naver-news-summarization-ko (한글 요약)
-  7. davidkim205/ko-ged (한글 STEM)
+  SFT 메인:
+    1. microsoft/orca-math-word-problems-200k (MIT) - 영어 수학
+    2. Open-Orca/SlimOrca (MIT) - 영어 일반
+    3. kuotient/orca-math-word-problems-193k-korean (CC-BY-SA-4.0) - 한글 수학
+    4. nlpai-lab/kullm-v2 (Apache-2.0) - 한글 일반
+  Calibration / 보강:
+    5. openai/gsm8k (MIT) - 영어 수학 Calibration
+    6. LGAI-EXAONE/MANTA-1M (CC-BY-NC-4.0) - STEM 강화
+    7. kuotient/orca-math-korean-preference (CC-BY-SA-4.0) - DPO/Preference
+    8. beomi/KoAlpaca-RealQA (CC-BY-SA-4.0) - 한글 품질 보강
+    9. TIGER-Lab/MMLU-Pro (MIT) - 영어 STEM Calibration
 
 사용법:
   python generate/prepare_dataset.py --output dataset --wp-samples 500 --kd-samples 2000 --fp8-samples 512 --seed 42
@@ -34,12 +38,7 @@ from datasets import load_dataset, Dataset
 # ╚══════════════════════════════════════════════════════════════╝
 
 DATASET_CONFIGS = [
-    {
-        "id": "Open-Orca/SlimOrca",
-        "name": "SlimOrca",
-        "split": "train",
-        "default_samples": 800,
-    },
+    # ── SFT 메인 ──
     {
         "id": "microsoft/orca-math-word-problems-200k",
         "name": "orca-math",
@@ -47,36 +46,63 @@ DATASET_CONFIGS = [
         "default_samples": 600,
     },
     {
-        "id": "kuotient/orca-math-korean-preference",
-        "name": "orca-math-korean",
+        "id": "Open-Orca/SlimOrca",
+        "name": "SlimOrca",
+        "split": "train",
+        "default_samples": 600,
+    },
+    {
+        "id": "kuotient/orca-math-word-problems-193k-korean",
+        "name": "orca-math-193k-korean",
         "split": "train",
         "default_samples": 500,
+    },
+    {
+        "id": "nlpai-lab/kullm-v2",
+        "name": "kullm-v2",
+        "split": "train",
+        "default_samples": 500,
+    },
+    # ── Calibration / 보강 ──
+    {
+        "id": "openai/gsm8k",
+        "name": "gsm8k",
+        "split": "train",
+        "default_samples": 400,
+    },
+    {
+        "id": "LGAI-EXAONE/MANTA-1M",
+        "name": "MANTA-1M",
+        "split": "train",
+        "default_samples": 500,
+    },
+    {
+        "id": "kuotient/orca-math-korean-preference",
+        "name": "orca-math-korean-pref",
+        "split": "train",
+        "default_samples": 300,
     },
     {
         "id": "beomi/KoAlpaca-RealQA",
         "name": "KoAlpaca-RealQA",
         "split": "train",
-        "default_samples": 400,
+        "default_samples": 300,
     },
     {
-        "id": "TIGER-Lab/MMLU-STEM",
-        "name": "MMLU-STEM",
+        "id": "TIGER-Lab/MMLU-Pro",
+        "name": "MMLU-Pro",
         "split": "test",
         "default_samples": 300,
     },
-    {
-        "id": "daekeun-ml/naver-news-summarization-ko",
-        "name": "naver-news",
-        "split": "train",
-        "default_samples": 300,
-    },
-    {
-        "id": "davidkim205/ko-ged",
-        "name": "ko-ged",
-        "split": "train",
-        "default_samples": 200,
-    },
 ]
+
+
+def normalize_orca_math(example):
+    """orca-math-word-problems-200k: question/answer → user/assistant"""
+    return [
+        {"role": "user", "content": example["question"]},
+        {"role": "assistant", "content": example["answer"]},
+    ]
 
 
 def normalize_slimorca(example):
@@ -89,15 +115,49 @@ def normalize_slimorca(example):
     return conversations
 
 
-def normalize_orca_math(example):
-    """orca-math-word-problems-200k: question/answer → user/assistant"""
+def normalize_orca_math_193k_korean(example):
+    """orca-math-word-problems-193k-korean: question/answer → user/assistant"""
     return [
         {"role": "user", "content": example["question"]},
         {"role": "assistant", "content": example["answer"]},
     ]
 
 
-def normalize_orca_math_korean(example):
+def normalize_kullm_v2(example):
+    """kullm-v2: instruction/input/output → user/assistant"""
+    user_content = example["instruction"]
+    if example.get("input"):
+        user_content += "\n\n" + example["input"]
+    return [
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": example["output"]},
+    ]
+
+
+def normalize_gsm8k(example):
+    """gsm8k: question/answer → user/assistant (CoT reasoning 포함)"""
+    return [
+        {"role": "user", "content": example["question"]},
+        {"role": "assistant", "content": example["answer"]},
+    ]
+
+
+def normalize_manta_1m(example):
+    """MANTA-1M: conversations 필드가 이미 role/content 포맷"""
+    conversations = example["conversations"]
+    # 이미 {"role": ..., "content": ...} 형태인 경우
+    if conversations and isinstance(conversations[0], dict) and "role" in conversations[0]:
+        return conversations
+    # from/value 형태인 경우 (혹시 모를 대비)
+    ROLE_MAP = {"human": "user", "gpt": "assistant", "system": "system"}
+    return [
+        {"role": ROLE_MAP.get(t.get("from", ""), t.get("from", "")),
+         "content": t.get("value", t.get("content", ""))}
+        for t in conversations
+    ]
+
+
+def normalize_orca_math_korean_pref(example):
     """orca-math-korean-preference: question/answer → user/assistant"""
     return [
         {"role": "user", "content": example["question"]},
@@ -107,13 +167,11 @@ def normalize_orca_math_korean(example):
 
 def normalize_koalpaca(example):
     """KoAlpaca-RealQA: 필드 동적 탐지 (Q/A, instruction/output 등)"""
-    # Q/A 패턴
     if "Q" in example and "A" in example:
         return [
             {"role": "user", "content": example["Q"]},
             {"role": "assistant", "content": example["A"]},
         ]
-    # instruction/output 패턴
     if "instruction" in example and "output" in example:
         user_content = example["instruction"]
         if example.get("input"):
@@ -122,30 +180,35 @@ def normalize_koalpaca(example):
             {"role": "user", "content": user_content},
             {"role": "assistant", "content": example["output"]},
         ]
-    # question/answer 패턴
     if "question" in example and "answer" in example:
         return [
             {"role": "user", "content": example["question"]},
             {"role": "assistant", "content": example["answer"]},
         ]
-    # 대화 패턴
     if "conversations" in example:
         return normalize_slimorca(example)
     raise ValueError(f"KoAlpaca-RealQA: 알 수 없는 필드 구조: {list(example.keys())}")
 
 
-def normalize_mmlu_stem(example):
-    """MMLU-STEM: MCQ 포맷팅 (question + choices → user, answer → assistant)"""
-    choices = example["choices"]
-    labels = ["A", "B", "C", "D"]
-    choices_text = "\n".join(f"{labels[i]}. {c}" for i, c in enumerate(choices))
+def normalize_mmlu_pro(example):
+    """MMLU-Pro: MCQ 포맷팅 (question + options → user, answer → assistant)"""
+    options = example["options"]
+    labels = [chr(ord("A") + i) for i in range(len(options))]
+    choices_text = "\n".join(f"{labels[i]}. {opt}" for i, opt in enumerate(options))
     user_content = f"{example['question']}\n\n{choices_text}"
 
-    answer_idx = example["answer"]
-    if isinstance(answer_idx, int) and 0 <= answer_idx < len(labels):
-        answer_text = f"{labels[answer_idx]}. {choices[answer_idx]}"
+    answer = example.get("answer", "")
+    # answer가 문자열(A, B, ...)인 경우 해당 선지 텍스트도 포함
+    if isinstance(answer, str) and len(answer) == 1 and answer.isalpha():
+        idx = ord(answer.upper()) - ord("A")
+        if 0 <= idx < len(options):
+            answer_text = f"{answer.upper()}. {options[idx]}"
+        else:
+            answer_text = answer
+    elif isinstance(answer, int) and 0 <= answer < len(options):
+        answer_text = f"{labels[answer]}. {options[answer]}"
     else:
-        answer_text = str(answer_idx)
+        answer_text = str(answer)
 
     return [
         {"role": "user", "content": user_content},
@@ -153,51 +216,16 @@ def normalize_mmlu_stem(example):
     ]
 
 
-def normalize_naver_news(example):
-    """naver-news: document → user (요약 요청), summary → assistant"""
-    return [
-        {"role": "user", "content": f"다음 기사를 요약해주세요.\n\n{example['document']}"},
-        {"role": "assistant", "content": example["summary"]},
-    ]
-
-
-def normalize_ko_ged(example):
-    """ko-ged: 필드 동적 탐지"""
-    # question/answer 패턴
-    if "question" in example and "answer" in example:
-        return [
-            {"role": "user", "content": example["question"]},
-            {"role": "assistant", "content": str(example["answer"])},
-        ]
-    # instruction/output 패턴
-    if "instruction" in example and "output" in example:
-        user_content = example["instruction"]
-        if example.get("input"):
-            user_content += "\n\n" + example["input"]
-        return [
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": example["output"]},
-        ]
-    # problem/solution 패턴
-    if "problem" in example and "solution" in example:
-        return [
-            {"role": "user", "content": example["problem"]},
-            {"role": "assistant", "content": str(example["solution"])},
-        ]
-    # conversations 패턴
-    if "conversations" in example:
-        return normalize_slimorca(example)
-    raise ValueError(f"ko-ged: 알 수 없는 필드 구조: {list(example.keys())}")
-
-
 NORMALIZERS = {
-    "SlimOrca": normalize_slimorca,
     "orca-math": normalize_orca_math,
-    "orca-math-korean": normalize_orca_math_korean,
+    "SlimOrca": normalize_slimorca,
+    "orca-math-193k-korean": normalize_orca_math_193k_korean,
+    "kullm-v2": normalize_kullm_v2,
+    "gsm8k": normalize_gsm8k,
+    "MANTA-1M": normalize_manta_1m,
+    "orca-math-korean-pref": normalize_orca_math_korean_pref,
     "KoAlpaca-RealQA": normalize_koalpaca,
-    "MMLU-STEM": normalize_mmlu_stem,
-    "naver-news": normalize_naver_news,
-    "ko-ged": normalize_ko_ged,
+    "MMLU-Pro": normalize_mmlu_pro,
 }
 
 

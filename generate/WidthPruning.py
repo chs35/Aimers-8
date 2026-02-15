@@ -1,5 +1,5 @@
 """
-WidthPrunedKD: Width Pruning (구조적 채널 프루닝) + Knowledge Distillation Recovery
+WidthPruning: Width Pruning (구조적 채널 프루닝)
 
 파이프라인:
   1. 모델 로드 + 아키텍처 정보 출력
@@ -7,8 +7,7 @@ WidthPrunedKD: Width Pruning (구조적 채널 프루닝) + Knowledge Distillati
   3. 채널 중요도 기반 프루닝 대상 선정
   4. FFN Weight Surgery (gate_proj, up_proj, down_proj 차원 축소)
   5. Attention Head Pruning (선택적, GQA 고려)
-  6. Knowledge Distillation Recovery (원본 모델을 teacher로 사용)
-  7. 최종 모델 저장
+  6. 최종 모델 저장
 
 Width Pruning은 FFN의 intermediate 차원을 줄여 작은 dense 행렬을 만들어
 직접적인 추론 속도 향상을 제공한다. Depth pruning(레이어 제거)과 달리
@@ -19,30 +18,13 @@ Width Pruning은 FFN의 intermediate 차원을 줄여 작은 dense 행렬을 만
   - activation_norm: 캘리브레이션 데이터에서 채널별 활성화 L2 norm 평균
   - weight_norm: gate_proj, up_proj 가중치의 행 L2 norm 합
 
-Knowledge Distillation Recovery (논문 기반 개선 버전):
-  - 원본(프루닝 전) 모델을 teacher, 프루닝된 모델을 student로 사용
-  - 최대 5가지 loss를 결합하여 학습:
-    · Task loss (CE): 일반적인 language modeling loss (Minitron: 제거가 최적)
-    · Logit KD: Forward/Reverse/Adaptive KL divergence (AKL 논문)
-    · Hidden State KD: Cosine Similarity 또는 MSE (CoDIR 논문)
-    · Attention Map Transfer: teacher attention pattern KL 매칭
-    · Embedding Output 매칭: 입력 표현 정렬
-  - 논문 기반 개선:
-    · Temperature 1.0 (Minitron: LLM에서 ≤1.0 최적)
-    · Adaptive KL: FKL→RKL 동적 전환 (AKL 논문)
-    · 동적 α 가중치: loss 비율 기반 자동 조절 (Minitron)
-    · Cosine Similarity: MSE 대비 scale-invariant, gradient 안정
-  - Width pruning은 hidden_size(2048)를 유지하므로 projection layer 불필요
-  - 두 가지 학습 모드 지원 (USE_LORA로 선택):
-    · LoRA 모드: 저랭크 어댑터로 메모리 효율적 학습 (rank ≤ 128 권장)
-    · Direct Training 모드: 특정 projection layer만 unfreeze하여 직접 학습 (rank > 128이면 권장)
-  - LoRA 모드에서는 학습 후 merge_and_unload()로 가중치 병합
+KD Recovery는 별도 스크립트(KD_Recovery.py)에서 수행.
 
 GPU 호환: L4(sm_89) 이상 모든 GPU에서 동작
-필요 패키지: pip install peft  (LoRA 모드에서만 필요, Dockerfile에 미포함)
 
-
-python generate/WidthPruning.py --model <모델 겨올> -o <출력 경로, 미지정 시 models>
+#사용 예시
+python generate/WidthPruning.py --model models/EXAONE-4.0-1.2B       
+  --target-size 3072
 
 """
 
@@ -51,26 +33,8 @@ import json
 import argparse
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset, load_from_disk, Dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    TrainingArguments,
-    Trainer,
-    DataCollatorForLanguageModeling,
-)
-
-def _import_peft():
-    """LoRA 모드에서만 peft를 import (Direct Training 모드에서는 불필요)"""
-    try:
-        from peft import LoraConfig, get_peft_model, TaskType
-        return LoraConfig, get_peft_model, TaskType
-    except ImportError:
-        import subprocess
-        print("peft 패키지가 없습니다. 설치 중...")
-        subprocess.check_call(["pip", "install", "peft", "-q"])
-        from peft import LoraConfig, get_peft_model, TaskType
-        return LoraConfig, get_peft_model, TaskType
+from datasets import load_dataset, load_from_disk
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  HYPERPARAMETERS — 이 섹션만 수정하면 됩니다                  ║
@@ -83,73 +47,15 @@ DATASET_SPLIT = "train"
 
 # ── Width Pruning (FFN) ──
 PRUNE_FFN = True
-FFN_PRUNING_RATIO = 0.08           # FFN intermediate 차원 제거 비율 (0.25 = 25% 제거) / 7.4% 감소 시 14.8% 감소 시보다 나은 성능
+TARGET_INTERMEDIATE_SIZE = None    # 목표 intermediate 차원 (예: 3072, 3584). CLI --target-size로 지정.
 IMPORTANCE_METRIC = "wanda"        # "wanda" | "activation_norm" | "weight_norm"
 NUM_CALIB_SAMPLES_PRUNING = 128    # 채널 중요도 계산용 캘리브레이션 샘플 수
 MAX_SEQ_LEN_PRUNING = 512          # 캘리브레이션 최대 시퀀스 길이
-WARP_ALIGN = True                  # 프루닝 후 차원을 32의 배수로 정렬
+ALIGN_MULTIPLE = 128               # 프루닝 후 차원을 128의 배수로 정렬
 
 # ── Width Pruning (Attention Head) ──
 PRUNE_ATTN_HEADS = False
 NUM_HEADS_TO_REMOVE = 2            # 제거할 attention head 수 (KV 그룹 단위), 1.2B 모델은 디코더 당 8그룹(GQA)
-
-# ── Knowledge Distillation ──
-KD_ENABLED = False                 # KD 학습 활성화/비활성화 (KD는 KD_Recovery.py로 분리됨)
-KD_TEMPERATURE = 1.0               # soft target temperature (Minitron: LLM에서 ≤1.0이 최적)
-KD_ALPHA_TASK = 0.0                # task loss (CE) 가중치 (Minitron: CE 제거가 최고 성능)
-KD_ALPHA_LOGIT = 0.7               # logit distillation (KL div) 가중치 (주력 loss)
-KD_ALPHA_HIDDEN = 0.3              # hidden state distillation 가중치
-KD_ALPHA_ATTN = 0.0                # attention map transfer 가중치 (0이면 비활성화)
-KD_ALPHA_EMBED = 0.0               # embedding output 매칭 가중치 (0이면 비활성화)
-KD_USE_COSINE_HIDDEN = True        # True: cosine similarity, False: MSE (기존)
-KD_USE_AKL = True                  # Adaptive KL: FKL+RKL 동적 결합 (AKL 논문)
-KD_USE_DYNAMIC_ALPHA = True        # 동적 loss 가중치 (Minitron 방식: logit/hidden 비율)
-
-# ── 학습 모드 선택 ──
-# True: LoRA 사용 (rank ≤ 128 권장, 메모리 효율적)
-# False: 특정 projection layer만 직접 학습 (rank > 128이면 이 모드가 더 효과적)
-#
-# LoRA rank별 파라미터 수 (1.2B 모델, FFN 3모듈 × 16레이어 기준):
-#   rank  8  → 2.2M (0.6%)   |  rank  64 → 17.3M (4.9%)
-#   rank 128 → 34.6M (9.8%)  |  rank 256 → 69.2M (19.6%)
-# Direct training (gate+up+down × 16레이어): 352M (100%) → 2.8GB optimizer mem
-# Direct training (gate+down × 16레이어): 235M (67%) → 1.9GB optimizer mem
-#
-# 권장: rank ≤ 128이면 LoRA, rank > 128이면 Direct Training으로 전환
-USE_LORA = False
-
-# ── LoRA 설정 (USE_LORA=True 일 때만 적용) ──
-LORA_RANK = 64                     # LoRA rank (KD에서는 더 큰 rank 사용)
-LORA_ALPHA = 128                   # LoRA alpha (보통 rank의 2배, scaling = alpha/rank)
-LORA_DROPOUT = 0.05                # LoRA dropout (과적합 방지)
-LORA_TARGET_MODULES_FFN = [        # FFN만 프루닝 시 LoRA 대상 (프루닝된 모듈만)
-    "gate_proj", "up_proj", "down_proj",
-]
-LORA_TARGET_MODULES_ALL = [        # Attention + FFN 모두 프루닝 시 LoRA 대상
-    "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
-]
-
-# ── Direct Training 설정 (USE_LORA=False 일 때만 적용) ──
-# 학습할 projection layer 이름 목록 (나머지는 freeze)
-# FFN: "gate_proj", "up_proj", "down_proj"
-# Attention: "q_proj", "k_proj", "v_proj", "o_proj"
-DIRECT_TRAIN_MODULES_FFN = [       # FFN만 프루닝 시 직접 학습 대상
-    "gate_proj", "down_proj",      # up_proj 제외로 메모리 절약 (gate와 up은 유사 역할)
-]
-DIRECT_TRAIN_MODULES_ALL = [       # Attention + FFN 모두 프루닝 시 직접 학습 대상
-    "q_proj", "v_proj",            # k_proj, o_proj 제외로 메모리 절약
-    "gate_proj", "down_proj",
-]
-
-# ── 공통 학습 설정 ──
-KD_LR = 2e-4                       # 학습률 (LoRA 모드)
-DIRECT_LR = 5e-5                   # 학습률 (Direct 모드, LoRA보다 낮게 설정)
-KD_EPOCHS = 5                      # 에폭 수, 기본은 3, 늘리면 성능 상승 / 과적합 가능성 상승 및 시간 소요 상승
-KD_BATCH_SIZE = 4                  # per-device 배치 크기 (GPU 메모리에 따라 조절)
-KD_GRAD_ACCUM = 8                  # gradient accumulation (effective batch = 4*8=32)
-NUM_TRAIN_SAMPLES = 1000           # KD 학습용 샘플 수
-MAX_SEQ_LEN_TRAIN = 512            # KD 학습용 최대 시퀀스 길이
 
 # ── 환경 ──
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -296,25 +202,29 @@ def compute_channel_importance(model, activation_norms, metric):
     return importance
 
 
-def select_channels_to_keep(importance, intermediate_size, pruning_ratio, warp_align):
+def select_channels_to_keep(importance, intermediate_size, target_size, align_multiple):
     """
     각 레이어에서 유지할 채널 인덱스를 선정 (균일 프루닝).
 
     모든 레이어에서 동일한 new_intermediate_size를 사용하여 vLLM 호환성을 보장한다.
 
+    Args:
+        importance: 채널별 중요도 점수
+        intermediate_size: 원본 intermediate 차원
+        target_size: 목표 intermediate 차원 (128의 배수 권장)
+        align_multiple: 정렬 배수 (128)
+
     Returns:
         new_intermediate_size: int
         keep_indices_per_layer: dict[layer_idx] -> tensor of keep indices
     """
-    num_to_keep = int(intermediate_size * (1 - pruning_ratio))
+    new_intermediate_size = round_to_multiple(target_size, align_multiple)
 
-    if warp_align:
-        new_intermediate_size = round_to_multiple(num_to_keep, 32)
-    else:
-        new_intermediate_size = num_to_keep
+    # 최소 128 채널은 유지
+    new_intermediate_size = max(new_intermediate_size, align_multiple)
 
-    # 최소 32 채널은 유지
-    new_intermediate_size = max(new_intermediate_size, 32)
+    # 원본보다 클 수 없음
+    new_intermediate_size = min(new_intermediate_size, intermediate_size)
 
     keep_indices_per_layer = {}
     for layer_idx, scores in importance.items():
@@ -488,168 +398,6 @@ def prune_attention_heads(model, num_groups_to_remove):
     return new_num_heads, new_num_kv_heads
 
 
-class KDTrainer(Trainer):
-    """
-    Knowledge Distillation Trainer (논문 기반 개선 버전).
-
-    Teacher 모델의 logit, hidden state, attention map, embedding을 사용하여 student를 학습.
-    개선 사항 (Minitron, MiniLLM, AKL, CoDIR 등 논문 기반):
-      - Temperature 1.0 (Minitron: LLM에서 ≤1.0 최적)
-      - CE 제거, Logit KLD 주력 (Minitron: logit-only가 최고 성능)
-      - Adaptive KL: FKL+RKL 동적 결합 (AKL 논문)
-      - Cosine Similarity for hidden states (MSE 대신, scale-invariant)
-      - Attention Map Transfer (teacher attention pattern 전달)
-      - Embedding Output 매칭 (입력 표현 정렬)
-      - 동적 α 가중치 (Minitron: loss 비율 기반)
-    """
-
-    def __init__(self, teacher_model, temperature, alpha_task, alpha_logit, alpha_hidden,
-                 alpha_attn=0.0, alpha_embed=0.0,
-                 use_cosine_hidden=True, use_akl=True, use_dynamic_alpha=True,
-                 total_train_steps=None, **kwargs):
-        super().__init__(**kwargs)
-        self.teacher = teacher_model
-        self.temperature = temperature
-        self.alpha_task = alpha_task
-        self.alpha_logit = alpha_logit
-        self.alpha_hidden = alpha_hidden
-        self.alpha_attn = alpha_attn
-        self.alpha_embed = alpha_embed
-        self.use_cosine_hidden = use_cosine_hidden
-        self.use_akl = use_akl
-        self.use_dynamic_alpha = use_dynamic_alpha
-        self.total_train_steps = total_train_steps
-        self._current_step = 0
-
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        self._current_step += 1
-
-        # Student forward (with grad, output_hidden_states=True, output_attentions if needed)
-        need_attn = self.alpha_attn > 0
-        student_outputs = model(
-            **inputs, output_hidden_states=True,
-            output_attentions=need_attn,
-        )
-        task_loss = student_outputs.loss  # standard CE loss
-
-        # Teacher forward (no grad)
-        with torch.no_grad():
-            teacher_outputs = self.teacher(
-                **inputs, output_hidden_states=True,
-                output_attentions=need_attn,
-            )
-
-        # ── 1) Logit KD ──
-        student_logits = student_outputs.logits
-        teacher_logits = teacher_outputs.logits
-        T = self.temperature
-
-        if self.use_akl and self.total_train_steps and self.total_train_steps > 0:
-            # Adaptive KL (AKL): FKL + RKL 동적 결합
-            # 학습 초반: FKL 위주 (분포 head 집중) → 후반: RKL 위주 (분포 tail 집중)
-            step_ratio = min(self._current_step / self.total_train_steps, 1.0)
-            beta = 1.0 - step_ratio  # 1.0→0.0
-
-            s_log_prob = F.log_softmax(student_logits / T, dim=-1)
-            t_prob = F.softmax(teacher_logits / T, dim=-1)
-            t_log_prob = F.log_softmax(teacher_logits / T, dim=-1)
-            s_prob = F.softmax(student_logits / T, dim=-1)
-
-            fkl = F.kl_div(s_log_prob, t_prob, reduction="batchmean")
-            rkl = F.kl_div(t_log_prob, s_prob, reduction="batchmean")
-            kd_logit_loss = (beta * fkl + (1.0 - beta) * rkl) * (T ** 2)
-        else:
-            # Standard Forward KLD
-            kd_logit_loss = F.kl_div(
-                F.log_softmax(student_logits / T, dim=-1),
-                F.softmax(teacher_logits / T, dim=-1),
-                reduction="batchmean",
-            ) * (T ** 2)
-
-        # ── 2) Hidden State KD ──
-        student_hidden = student_outputs.hidden_states[1:]  # skip embedding
-        teacher_hidden = teacher_outputs.hidden_states[1:]
-
-        if self.use_cosine_hidden:
-            # Cosine Similarity (scale-invariant, gradient 안정적)
-            hidden_loss = sum(
-                1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
-                for s, t in zip(student_hidden, teacher_hidden)
-            ) / len(student_hidden)
-        else:
-            # MSE (기존 방식)
-            hidden_loss = sum(
-                F.mse_loss(s.float(), t.float())
-                for s, t in zip(student_hidden, teacher_hidden)
-            ) / len(student_hidden)
-
-        # ── 3) Attention Map Transfer ──
-        attn_loss = torch.tensor(0.0, device=student_logits.device)
-        if need_attn:
-            student_attns = student_outputs.attentions
-            teacher_attns = teacher_outputs.attentions
-            num_layers = len(student_attns)
-            attn_loss = sum(
-                F.kl_div(
-                    torch.log(s_attn.float() + 1e-8),
-                    t_attn.float(),
-                    reduction="batchmean",
-                )
-                for s_attn, t_attn in zip(student_attns, teacher_attns)
-            ) / num_layers
-
-        # ── 4) Embedding Output 매칭 ──
-        embed_loss = torch.tensor(0.0, device=student_logits.device)
-        if self.alpha_embed > 0:
-            embed_loss = F.mse_loss(
-                student_outputs.hidden_states[0].float(),
-                teacher_outputs.hidden_states[0].float(),
-            )
-
-        # ── 5) Combined loss ──
-        if self.use_dynamic_alpha and self.alpha_hidden > 0:
-            # 동적 α (Minitron): logit loss / hidden loss 비율로 가중치 자동 조절
-            alpha_dynamic = kd_logit_loss.detach() / (hidden_loss.detach() + 1e-8)
-            total_loss = (
-                self.alpha_task * task_loss
-                + kd_logit_loss
-                + alpha_dynamic * hidden_loss
-                + self.alpha_attn * attn_loss
-                + self.alpha_embed * embed_loss
-            )
-        else:
-            total_loss = (
-                self.alpha_task * task_loss
-                + self.alpha_logit * kd_logit_loss
-                + self.alpha_hidden * hidden_loss
-                + self.alpha_attn * attn_loss
-                + self.alpha_embed * embed_loss
-            )
-
-        # 개별 loss를 로깅용으로 저장
-        self._kd_metrics = {
-            "task_loss": task_loss.detach().item(),
-            "kd_logit_loss": kd_logit_loss.detach().item(),
-            "hidden_loss": hidden_loss.detach().item(),
-        }
-        if need_attn:
-            self._kd_metrics["attn_loss"] = attn_loss.detach().item()
-        if self.alpha_embed > 0:
-            self._kd_metrics["embed_loss"] = embed_loss.detach().item()
-        if self.use_akl and self.total_train_steps and self.total_train_steps > 0:
-            self._kd_metrics["akl_beta"] = beta
-        if self.use_dynamic_alpha and self.alpha_hidden > 0:
-            self._kd_metrics["dynamic_alpha"] = alpha_dynamic.item()
-
-        return (total_loss, student_outputs) if return_outputs else total_loss
-
-    def log(self, logs, *args, **kwargs):
-        """학습 로그에 개별 KD loss 컴포넌트를 추가"""
-        if hasattr(self, "_kd_metrics"):
-            logs.update(self._kd_metrics)
-        super().log(logs, *args, **kwargs)
-
-
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  MAIN PIPELINE                                              ║
 # ╚══════════════════════════════════════════════════════════════╝
@@ -659,13 +407,13 @@ if __name__ == "__main__":
     # ===========================================================
     # CLI Arguments
     # ===========================================================
-    parser = argparse.ArgumentParser(description="Width Pruning + Knowledge Distillation")
+    parser = argparse.ArgumentParser(description="Width Pruning")
     parser.add_argument("--model", "-m", type=str, default="LGAI-EXAONE/EXAONE-4.0-1.2B",
                         help="모델 경로 (HuggingFace ID 또는 로컬 경로)")
-    parser.add_argument("--teacher", type=str, default=None,
-                        help="KD Teacher 모델 경로 (기본값: --model과 동일)")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="출력 경로 (기본값: models/<모델명>-WP<intermediate_size>)")
+    parser.add_argument("--target-size", "-t", type=int, default=None,
+                        help="목표 FFN intermediate 차원 (예: 3072, 3584). 128의 배수로 자동 정렬됨.")
     parser.add_argument("--dataset", "-d", type=str, default=None,
                         help="로컬 캘리브레이션 데이터셋 경로 (prepare_dataset.py의 wp_calib)")
     args = parser.parse_args()
@@ -677,14 +425,6 @@ if __name__ == "__main__":
         LOCAL_MODEL_DIR = MODEL_ID
     else:
         LOCAL_MODEL_DIR = os.path.join("models", model_name)
-
-    # Teacher 경로 해석
-    teacher_input = args.teacher or args.model
-    TEACHER_MODEL_ID = teacher_input
-    if os.path.isdir(teacher_input):
-        TEACHER_LOCAL_MODEL_DIR = teacher_input
-    else:
-        TEACHER_LOCAL_MODEL_DIR = os.path.join("models", os.path.basename(teacher_input.rstrip("/\\")))
 
     # ===========================================================
     # Step 1: 모델 로드 + 아키텍처 정보 출력
@@ -754,21 +494,33 @@ if __name__ == "__main__":
         # ===========================================================
         # Step 3: 채널 중요도 기반 프루닝 대상 선정
         # ===========================================================
+        # 목표 intermediate 차원 결정 (CLI > 하이퍼파라미터 > 에러)
+        target_size = args.target_size or TARGET_INTERMEDIATE_SIZE
+        if target_size is None:
+            print("[ERROR] --target-size를 지정해야 합니다. (예: --target-size 3072)")
+            print(f"  현재 intermediate_size: {intermediate_size}")
+            print(f"  128의 배수 예시: {', '.join(str(round_to_multiple(intermediate_size * r, ALIGN_MULTIPLE)) for r in [0.95, 0.9, 0.85, 0.8, 0.75, 0.7])}")
+            import sys; sys.exit(1)
+
+        if target_size >= intermediate_size:
+            print(f"[ERROR] target_size({target_size})가 원본 intermediate_size({intermediate_size})보다 크거나 같습니다.")
+            import sys; sys.exit(1)
+
         print("=" * 60)
-        print(f"Step 3: 채널 중요도 기반 프루닝 대상 선정 (ratio: {FFN_PRUNING_RATIO})")
+        print(f"Step 3: 채널 중요도 기반 프루닝 대상 선정 (target: {target_size})")
         print("=" * 60)
 
         importance = compute_channel_importance(model, activation_norms, IMPORTANCE_METRIC)
 
         new_intermediate_size, keep_indices_per_layer = select_channels_to_keep(
-            importance, intermediate_size, FFN_PRUNING_RATIO, WARP_ALIGN,
+            importance, intermediate_size, target_size, ALIGN_MULTIPLE,
         )
 
         print(f"  원본 intermediate_size: {intermediate_size}")
-        print(f"  프루닝 후 intermediate_size: {new_intermediate_size}")
+        print(f"  목표 intermediate_size: {target_size}")
+        print(f"  정렬 후 intermediate_size: {new_intermediate_size}")
         print(f"  실제 제거 비율: {(1 - new_intermediate_size / intermediate_size) * 100:.1f}%")
-        if WARP_ALIGN:
-            print(f"  32의 배수 정렬 적용됨")
+        print(f"  {ALIGN_MULTIPLE}의 배수 정렬 적용됨")
 
         # 레이어별 중요도 통계 출력
         for layer_idx in [0, num_layers // 2, num_layers - 1]:
@@ -838,198 +590,12 @@ if __name__ == "__main__":
         print()
 
     # ===========================================================
-    # Step 6: Knowledge Distillation Recovery
-    # ===========================================================
-    # 원본(프루닝 전) 모델을 teacher로, 프루닝된 모델을 student로 사용하여
-    # logit + hidden state distillation으로 성능을 복구한다.
-    # LoRA를 사용하여 메모리 효율적으로 학습.
-    if KD_ENABLED:
-        print("=" * 60)
-        print("Step 6: Knowledge Distillation Recovery")
-        print("=" * 60)
-
-        # 6-1. Teacher 모델 로드
-        if os.path.isdir(TEACHER_LOCAL_MODEL_DIR) and os.path.isfile(os.path.join(TEACHER_LOCAL_MODEL_DIR, "config.json")):
-            teacher_path = TEACHER_LOCAL_MODEL_DIR
-            print(f"  Teacher 로컬 모델 사용: {TEACHER_LOCAL_MODEL_DIR}")
-        else:
-            os.makedirs(TEACHER_LOCAL_MODEL_DIR, exist_ok=True)
-            print(f"  Teacher 모델 다운로드: {TEACHER_MODEL_ID} → {TEACHER_LOCAL_MODEL_DIR}")
-            from huggingface_hub import snapshot_download
-            snapshot_download(repo_id=TEACHER_MODEL_ID, local_dir=TEACHER_LOCAL_MODEL_DIR)
-            teacher_path = TEACHER_LOCAL_MODEL_DIR
-        teacher_model = AutoModelForCausalLM.from_pretrained(
-            teacher_path, torch_dtype=torch.bfloat16, device_map="auto"
-        )
-        teacher_model.eval()
-        teacher_model.requires_grad_(False)
-        print(f"  Teacher 모델 로드 완료: {TEACHER_MODEL_ID}")
-
-        # 6-2. 학습 데이터 준비
-        print("  학습 데이터 준비...")
-        raw_ds_kd = load_dataset(DATASET_ID, split=DATASET_SPLIT, streaming=True)
-        kd_data = list(raw_ds_kd.take(NUM_TRAIN_SAMPLES))
-        train_ds = Dataset.from_list(kd_data)
-
-        def preprocess_kd(example):
-            return {
-                "text": tokenizer.apply_chat_template(
-                    example["conversations"],
-                    add_generation_prompt=True,
-                    tokenize=False,
-                )
-            }
-
-        train_ds = train_ds.map(preprocess_kd)
-
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        def tokenize_fn(example):
-            return tokenizer(
-                example["text"],
-                truncation=True,
-                max_length=MAX_SEQ_LEN_TRAIN,
-                padding=False,
-            )
-
-        train_ds = train_ds.map(tokenize_fn, remove_columns=train_ds.column_names)
-        print(f"  학습 샘플 수: {len(train_ds)}")
-
-        # 6-3. Student 모델 학습 설정 (LoRA vs Direct Training)
-        if USE_LORA:
-            # ── LoRA 모드: 저랭크 어댑터로 메모리 효율적 학습 ──
-            LoraConfig, get_peft_model, TaskType = _import_peft()
-            lora_target = LORA_TARGET_MODULES_ALL if PRUNE_ATTN_HEADS else LORA_TARGET_MODULES_FFN
-            print(f"  [LoRA 모드] rank={LORA_RANK}, alpha={LORA_ALPHA}, modules={lora_target}")
-            lora_config = LoraConfig(
-                r=LORA_RANK,
-                lora_alpha=LORA_ALPHA,
-                lora_dropout=LORA_DROPOUT,
-                target_modules=lora_target,
-                bias="none",
-                task_type=TaskType.CAUSAL_LM,
-            )
-            model = get_peft_model(model, lora_config)
-            model.print_trainable_parameters()
-            learning_rate = KD_LR
-        else:
-            # ── Direct Training 모드: 특정 projection layer만 unfreeze ──
-            direct_target = DIRECT_TRAIN_MODULES_ALL if PRUNE_ATTN_HEADS else DIRECT_TRAIN_MODULES_FFN
-            print(f"  [Direct Training 모드] 학습 대상 모듈: {direct_target}")
-
-            # 전체 파라미터 freeze
-            model.requires_grad_(False)
-
-            # 지정된 모듈만 unfreeze
-            unfrozen_params = 0
-            total_params_model = sum(p.numel() for p in model.parameters())
-            for name, param in model.named_parameters():
-                if any(mod in name for mod in direct_target):
-                    param.requires_grad = True
-                    unfrozen_params += param.numel()
-
-            print(f"  학습 파라미터: {unfrozen_params:,} / {total_params_model:,} "
-                  f"({unfrozen_params / total_params_model * 100:.2f}%)")
-            learning_rate = DIRECT_LR
-
-        # 6-4. KD 학습
-        model.config.use_cache = False
-        if USE_LORA:
-            model.enable_input_require_grads()
-        else:
-            # Direct Training에서도 gradient checkpointing 호환을 위해 필요
-            model.enable_input_require_grads()
-
-        training_args = TrainingArguments(
-            output_dir="./kd_recovery_output",
-            per_device_train_batch_size=KD_BATCH_SIZE,
-            gradient_accumulation_steps=KD_GRAD_ACCUM,
-            num_train_epochs=KD_EPOCHS,
-            learning_rate=learning_rate,
-            bf16=True,
-            gradient_checkpointing=True,
-            logging_steps=5,
-            logging_first_step=True,
-            save_strategy="no",
-            report_to="none",
-            remove_unused_columns=False,
-            disable_tqdm=False,
-        )
-
-        # total_train_steps 계산 (AKL step_ratio용)
-        steps_per_epoch = max(len(train_ds) // (KD_BATCH_SIZE * KD_GRAD_ACCUM), 1)
-        total_train_steps = steps_per_epoch * KD_EPOCHS
-
-        trainer = KDTrainer(
-            teacher_model=teacher_model,
-            temperature=KD_TEMPERATURE,
-            alpha_task=KD_ALPHA_TASK,
-            alpha_logit=KD_ALPHA_LOGIT,
-            alpha_hidden=KD_ALPHA_HIDDEN,
-            alpha_attn=KD_ALPHA_ATTN,
-            alpha_embed=KD_ALPHA_EMBED,
-            use_cosine_hidden=KD_USE_COSINE_HIDDEN,
-            use_akl=KD_USE_AKL,
-            use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
-            total_train_steps=total_train_steps,
-            model=model,
-            args=training_args,
-            train_dataset=train_ds,
-            data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
-        )
-
-        mode_str = f"LoRA(rank={LORA_RANK})" if USE_LORA else f"Direct({direct_target})"
-        kd_features = []
-        if KD_USE_AKL:
-            kd_features.append("AKL")
-        if KD_USE_COSINE_HIDDEN:
-            kd_features.append("CosineHidden")
-        if KD_USE_DYNAMIC_ALPHA:
-            kd_features.append("DynamicAlpha")
-        if KD_ALPHA_ATTN > 0:
-            kd_features.append(f"AttnTransfer(α={KD_ALPHA_ATTN})")
-        if KD_ALPHA_EMBED > 0:
-            kd_features.append(f"EmbedMatch(α={KD_ALPHA_EMBED})")
-        features_str = ", ".join(kd_features) if kd_features else "none"
-        print(f"  KD 학습 시작 [{mode_str}] (T={KD_TEMPERATURE}, α_task={KD_ALPHA_TASK}, "
-              f"α_logit={KD_ALPHA_LOGIT}, α_hidden={KD_ALPHA_HIDDEN}, lr={learning_rate})")
-        print(f"  개선 기법: {features_str}")
-        print(f"  총 학습 스텝: {total_train_steps}")
-        trainer.train()
-        print("  KD 학습 완료!")
-
-        # 6-5. Teacher 메모리 해제
-        del teacher_model
-        torch.cuda.empty_cache()
-        print("  Teacher 모델 메모리 해제 완료")
-
-        # 6-6. 후처리 (LoRA: merge, Direct: re-enable cache)
-        if USE_LORA:
-            print("  LoRA 가중치 병합 (merge_and_unload)...")
-            model = model.merge_and_unload()
-        model.config.use_cache = True
-
-        # 학습 임시 파일 정리
-        import shutil
-        if os.path.exists("./kd_recovery_output"):
-            shutil.rmtree("./kd_recovery_output")
-
-        print(f"  KD {'+ LoRA 병합' if USE_LORA else '(Direct Training)'} 완료! 모델이 복구되었습니다.")
-        print()
-    else:
-        print("=" * 60)
-        print("Step 6: Knowledge Distillation 건너뜀 (KD_ENABLED=False)")
-        print("=" * 60)
-        print()
-
-    # ===========================================================
-    # Step 7: 저장
+    # Step 6: 저장
     # ===========================================================
     SAVE_DIR = args.output or os.path.join("models", f"{model_name}-WP{model.config.intermediate_size}")
 
     print("=" * 60)
-    print("Step 7: 최종 모델 저장")
+    print("Step 6: 최종 모델 저장")
     print("=" * 60)
 
     # 모델 저장
@@ -1039,15 +605,15 @@ if __name__ == "__main__":
     # 프루닝 메타데이터 저장
     final_params = sum(p.numel() for p in model.parameters())
     pruning_meta = {
-        "method": "Width Pruning + Knowledge Distillation",
+        "method": "Width Pruning",
         "original_model": MODEL_ID,
         # FFN pruning info
         "prune_ffn": PRUNE_FFN,
         "importance_metric": IMPORTANCE_METRIC,
-        "ffn_pruning_ratio": FFN_PRUNING_RATIO,
+        "target_intermediate_size": target_size if PRUNE_FFN else None,
         "original_intermediate_size": intermediate_size,
         "pruned_intermediate_size": new_intermediate_size,
-        "warp_aligned": WARP_ALIGN,
+        "align_multiple": ALIGN_MULTIPLE,
         # Attention head pruning info
         "prune_heads": PRUNE_ATTN_HEADS,
         "original_num_attention_heads": num_attention_heads,
@@ -1055,25 +621,6 @@ if __name__ == "__main__":
         "pruned_num_attention_heads": model.config.num_attention_heads,
         "pruned_num_kv_heads": model.config.num_key_value_heads,
         "num_heads_removed": NUM_HEADS_TO_REMOVE if PRUNE_ATTN_HEADS else 0,
-        # KD info
-        "kd_enabled": KD_ENABLED,
-        "kd_temperature": KD_TEMPERATURE if KD_ENABLED else None,
-        "kd_alpha_task": KD_ALPHA_TASK if KD_ENABLED else None,
-        "kd_alpha_logit": KD_ALPHA_LOGIT if KD_ENABLED else None,
-        "kd_alpha_hidden": KD_ALPHA_HIDDEN if KD_ENABLED else None,
-        "kd_alpha_attn": KD_ALPHA_ATTN if KD_ENABLED else None,
-        "kd_alpha_embed": KD_ALPHA_EMBED if KD_ENABLED else None,
-        "kd_use_cosine_hidden": KD_USE_COSINE_HIDDEN if KD_ENABLED else None,
-        "kd_use_akl": KD_USE_AKL if KD_ENABLED else None,
-        "kd_use_dynamic_alpha": KD_USE_DYNAMIC_ALPHA if KD_ENABLED else None,
-        # Training mode info
-        "use_lora": USE_LORA if KD_ENABLED else None,
-        "lora_rank": LORA_RANK if (KD_ENABLED and USE_LORA) else None,
-        "lora_alpha": LORA_ALPHA if (KD_ENABLED and USE_LORA) else None,
-        "direct_train_modules": (DIRECT_TRAIN_MODULES_ALL if PRUNE_ATTN_HEADS else DIRECT_TRAIN_MODULES_FFN) if (KD_ENABLED and not USE_LORA) else None,
-        "learning_rate": (KD_LR if USE_LORA else DIRECT_LR) if KD_ENABLED else None,
-        "kd_epochs": KD_EPOCHS if KD_ENABLED else None,
-        "train_samples": NUM_TRAIN_SAMPLES if KD_ENABLED else None,
         # Param counts
         "original_params": total_params,
         "after_ffn_pruning_params": ffn_pruned_params,
@@ -1098,26 +645,5 @@ if __name__ == "__main__":
     print(f"  원본 모델:          {MODEL_ID}")
     print(f"  FFN Pruning:        {'intermediate_size ' + str(intermediate_size) + ' → ' + str(new_intermediate_size) + ' (' + str(round((1 - new_intermediate_size / intermediate_size) * 100, 1)) + '% 감소)' if PRUNE_FFN else '비활성화'}")
     print(f"  Head Pruning:       {'heads ' + str(num_attention_heads) + ' → ' + str(model.config.num_attention_heads) + ', kv_heads ' + str(num_kv_heads) + ' → ' + str(model.config.num_key_value_heads) if PRUNE_ATTN_HEADS else '비활성화'}")
-    if KD_ENABLED:
-        if USE_LORA:
-            kd_info = f"LoRA(rank={LORA_RANK}, lr={KD_LR}), T={KD_TEMPERATURE}, epochs={KD_EPOCHS}"
-        else:
-            dt_mods = DIRECT_TRAIN_MODULES_ALL if PRUNE_ATTN_HEADS else DIRECT_TRAIN_MODULES_FFN
-            kd_info = f"Direct({dt_mods}, lr={DIRECT_LR}), T={KD_TEMPERATURE}, epochs={KD_EPOCHS}"
-        kd_improvements = []
-        if KD_USE_AKL:
-            kd_improvements.append("AKL")
-        if KD_USE_COSINE_HIDDEN:
-            kd_improvements.append("CosineHidden")
-        if KD_USE_DYNAMIC_ALPHA:
-            kd_improvements.append("DynamicAlpha")
-        if KD_ALPHA_ATTN > 0:
-            kd_improvements.append("AttnTransfer")
-        if KD_ALPHA_EMBED > 0:
-            kd_improvements.append("EmbedMatch")
-        kd_info += f" + [{', '.join(kd_improvements)}]" if kd_improvements else ""
-    else:
-        kd_info = "비활성화"
-    print(f"  KD 복구:            {kd_info}")
     print(f"  파라미터:           {total_params:,} → {head_pruned_params:,} ({pruning_meta['param_reduction_pct']}% 감소)")
     print(f"  저장 위치:          {SAVE_DIR}/")

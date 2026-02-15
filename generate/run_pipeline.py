@@ -24,38 +24,42 @@ EXAONE-4.0-1.2B 경량화 해커톤용 4단계 파이프라인을 순차 실행�
     fp8_calib (512)  → Step 4 FP8 양자화 캘리브레이션
 
 사용법:
-  # 1) 전체 파이프라인 (HF에서 모델 다운로드 + 데이터셋 생성 + 모든 단계)
-  python generate/run_pipeline.py --base-model LGAI-EXAONE/EXAONE-4.0-1.2B
+  # 1) 전체 파이프라인 (목표 intermediate 차원 지정 필수)
+  python generate/run_pipeline.py --base-model LGAI-EXAONE/EXAONE-4.0-1.2B \
+      --target-size 3072
 
   # 2) 이미 로컬에 모델이 있는 경우
-  python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B
+  python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B \
+      --target-size 3584
 
   # 3) 데이터셋이 이미 생성되어 있으면 건너뛰기
-  python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B --skip-dataset-prep
+  python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B \
+      --target-size 3072 --skip-dataset-prep
   #    → dataset/ 하위에서 가장 최근 dataset_N을 자동 탐지하여 사용
 
   # 4) 특정 데이터셋 디렉토리를 직접 지정
   python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B \
-      --dataset-dir dataset/dataset_3
+      --target-size 3072 --dataset-dir dataset/dataset_3
 
   # 5) 일부 단계만 건너뛰기 (예: Vocab Pruning 이미 완료)
   python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B \
-      --skip-dataset-prep --skip-vocab
+      --target-size 3072 --skip-dataset-prep --skip-vocab
 
   # 6) KD용 Teacher를 별도 지정 (기본값: vocab-pruned 모델)
   python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B \
-      --teacher models/EXAONE-4.0-1.2B-VocabPruned
+      --target-size 3072 --teacher models/EXAONE-4.0-1.2B-VocabPruned
 
   # 7) 데이터셋 샘플 수 조절
   python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B \
-      --wp-samples 256 --kd-samples 3000 --fp8-samples 256
+      --target-size 3072 --wp-samples 256 --kd-samples 3000 --fp8-samples 256
 
-  # 8) FP8만 실행 (나머지 모두 건너뛰기)
-  python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B-WP5152-KD \
+  # 8) FP8만 실행 (나머지 모두 건너뛰기, --target-size 불필요)
+  python generate/run_pipeline.py --base-model models/EXAONE-4.0-1.2B-WP3072-KD \
       --skip-dataset-prep --skip-vocab --skip-width --skip-kd
 
 주요 인수:
   --base-model       시작 모델 (HF ID 또는 로컬 경로, 기본: LGAI-EXAONE/EXAONE-4.0-1.2B)
+  --target-size      Width Pruning 목표 FFN intermediate 차원 (예: 3072, 3584, 128의 배수로 자동 정렬)
   --teacher          KD teacher 모델 경로 (기본: Step 1 출력인 vocab-pruned 모델)
   --dataset-dir      데이터셋 디렉토리 경로 (기본: dataset/ 하위 최신 dataset_N 자동 탐지)
   --output-base      모델 출력 base 디렉토리 (기본: models)
@@ -129,6 +133,10 @@ def main():
                         help="KD Recovery 단계 건너뛰기")
     parser.add_argument("--skip-fp8", action="store_true",
                         help="FP8 Quantization 단계 건너뛰기")
+
+    # Width Pruning 설정
+    parser.add_argument("--target-size", type=int, default=None,
+                        help="Width Pruning 목표 FFN intermediate 차원 (예: 3072, 3584)")
 
     # 데이터셋 샘플 수
     parser.add_argument("--wp-samples", type=int, default=500,
@@ -210,10 +218,14 @@ def main():
 
     # ── Step 2: Width Pruning ──
     if not args.skip_width:
+        if args.target_size is None:
+            print("[ERROR] --target-size를 지정해야 합니다. (예: --target-size 3072)")
+            sys.exit(1)
         wp_cmd = [
             sys.executable, "generate/WidthPruning.py",
             "--model", current_model,
             "--dataset", wp_calib_path,
+            "--target-size", str(args.target_size),
         ]
         run_step("Step 2: Width Pruning", wp_cmd)
         # WidthPruning.py의 기본 출력 패턴: models/<name>-WP<intermediate_size>
