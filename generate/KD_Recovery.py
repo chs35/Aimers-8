@@ -539,8 +539,10 @@ if __name__ == "__main__":
     model.config.use_cache = False
     model.enable_input_require_grads()
 
+    CHECKPOINT_DIR = "./kd_recovery_output"
+
     training_args = TrainingArguments(
-        output_dir="./kd_recovery_output",
+        output_dir=CHECKPOINT_DIR,
         per_device_train_batch_size=KD_BATCH_SIZE,
         gradient_accumulation_steps=KD_GRAD_ACCUM,
         num_train_epochs=KD_EPOCHS,
@@ -601,6 +603,10 @@ if __name__ == "__main__":
     trainer.train()
     print("  KD 학습 완료!")
 
+    # Optimizer/Scheduler state 보존을 위한 checkpoint 저장
+    trainer.save_state()
+    ckpt_path = CHECKPOINT_DIR
+
     # ===========================================================
     # Step 5.5: 인터랙티브 추가 학습 루프
     # ===========================================================
@@ -634,10 +640,12 @@ if __name__ == "__main__":
 
         print(f"\n  {extra_epochs} epoch 추가 학습 시작...")
         total_epochs_trained += extra_epochs
+        current_step = trainer._current_step
 
-        # Training args 업데이트
+        # AcceleratorState 리셋 후 재호출 불가 → 새 Trainer + resume_from_checkpoint
+        # resume_from_checkpoint로 optimizer/scheduler state를 복원하여 loss 스파이크 방지
         training_args = TrainingArguments(
-            output_dir="./kd_recovery_output",
+            output_dir=CHECKPOINT_DIR,
             per_device_train_batch_size=KD_BATCH_SIZE,
             gradient_accumulation_steps=KD_GRAD_ACCUM,
             num_train_epochs=extra_epochs,
@@ -650,11 +658,33 @@ if __name__ == "__main__":
             report_to="none",
             remove_unused_columns=False,
             disable_tqdm=False,
+            ignore_data_skip=True,
         )
-        trainer.args = training_args
-        trainer.total_train_steps = steps_per_epoch * total_epochs_trained
-        trainer.train()
+        trainer = KDTrainer(
+            teacher_model=teacher_model,
+            temperature=KD_TEMPERATURE,
+            alpha_task=KD_ALPHA_TASK,
+            alpha_logit=KD_ALPHA_LOGIT,
+            alpha_hidden=KD_ALPHA_HIDDEN,
+            alpha_attn=KD_ALPHA_ATTN,
+            alpha_embed=KD_ALPHA_EMBED,
+            use_cosine_hidden=KD_USE_COSINE_HIDDEN,
+            use_akl=KD_USE_AKL,
+            use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
+            total_train_steps=steps_per_epoch * total_epochs_trained,
+            loss_history=loss_history,
+            model=model,
+            args=training_args,
+            train_dataset=train_ds,
+            data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        )
+        trainer._current_step = current_step
+        trainer.train(resume_from_checkpoint=ckpt_path)
         print(f"  추가 {extra_epochs} epoch 학습 완료! (총 {total_epochs_trained} epoch)")
+
+        # 다음 라운드를 위해 checkpoint 갱신
+        trainer.save_state()
+        ckpt_path = CHECKPOINT_DIR
 
     # ===========================================================
     # Step 6: 후처리 및 저장
@@ -676,8 +706,8 @@ if __name__ == "__main__":
     model.config.use_cache = True
 
     # 학습 임시 파일 정리
-    if os.path.exists("./kd_recovery_output"):
-        shutil.rmtree("./kd_recovery_output")
+    if os.path.exists(CHECKPOINT_DIR):
+        shutil.rmtree(CHECKPOINT_DIR)
 
     # 모델 저장
     model.save_pretrained(SAVE_DIR)

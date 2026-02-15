@@ -4,7 +4,7 @@ hf_transfer==0.1.9
 lm_eval[vllm,api]==0.4.10
 openai>=1.0
 pyyaml>=6.0
-
+matplotlib
 
 ##모델 다운
 #huggingface-cli download LGAI-EXAONE/EXAONE-4.0-1.2B --local-dir models/EXAONE-4.0-1.2B

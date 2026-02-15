@@ -40,7 +40,7 @@ FP8_KV_CACHE_RECIPE = """
 quant_stage:
     quant_modifiers:
         QuantizationModifier:
-            ignore: ["lm_head"]
+            ignore: []                  #"lm_head" 제거
             config_groups:
                 group_0:
                     weights:

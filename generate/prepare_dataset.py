@@ -1,5 +1,5 @@
 """
-prepare_dataset: 9개 HuggingFace 데이터셋에서 Disjoint 3-Split 생성
+prepare_dataset: 8개 HuggingFace 데이터셋에서 Disjoint 3-Split 생성
 
 파이프라인의 각 단계(Width Pruning, KD Recovery, FP8 Quantization)가
 서로 겹치지 않는(disjoint) 데이터를 사용하도록 보장한다.
@@ -16,8 +16,7 @@ prepare_dataset: 9개 HuggingFace 데이터셋에서 Disjoint 3-Split 생성
     5. openai/gsm8k (MIT) - 영어 수학 Calibration
     6. LGAI-EXAONE/MANTA-1M (CC-BY-NC-4.0) - STEM 강화
     7. kuotient/orca-math-korean-preference (CC-BY-SA-4.0) - DPO/Preference
-    8. beomi/KoAlpaca-RealQA (CC-BY-SA-4.0) - 한글 품질 보강
-    9. TIGER-Lab/MMLU-Pro (MIT) - 영어 STEM Calibration
+    8. TIGER-Lab/MMLU-Pro (MIT) - 영어 STEM Calibration
 
 사용법:
   python generate/prepare_dataset.py --output dataset --wp-samples 500 --kd-samples 2000 --fp8-samples 512 --seed 42
@@ -67,6 +66,7 @@ DATASET_CONFIGS = [
     {
         "id": "openai/gsm8k",
         "name": "gsm8k",
+        "config": "main",
         "split": "train",
         "default_samples": 400,
     },
@@ -79,12 +79,6 @@ DATASET_CONFIGS = [
     {
         "id": "kuotient/orca-math-korean-preference",
         "name": "orca-math-korean-pref",
-        "split": "train",
-        "default_samples": 300,
-    },
-    {
-        "id": "beomi/KoAlpaca-RealQA",
-        "name": "KoAlpaca-RealQA",
         "split": "train",
         "default_samples": 300,
     },
@@ -165,31 +159,6 @@ def normalize_orca_math_korean_pref(example):
     ]
 
 
-def normalize_koalpaca(example):
-    """KoAlpaca-RealQA: 필드 동적 탐지 (Q/A, instruction/output 등)"""
-    if "Q" in example and "A" in example:
-        return [
-            {"role": "user", "content": example["Q"]},
-            {"role": "assistant", "content": example["A"]},
-        ]
-    if "instruction" in example and "output" in example:
-        user_content = example["instruction"]
-        if example.get("input"):
-            user_content += "\n\n" + example["input"]
-        return [
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": example["output"]},
-        ]
-    if "question" in example and "answer" in example:
-        return [
-            {"role": "user", "content": example["question"]},
-            {"role": "assistant", "content": example["answer"]},
-        ]
-    if "conversations" in example:
-        return normalize_slimorca(example)
-    raise ValueError(f"KoAlpaca-RealQA: 알 수 없는 필드 구조: {list(example.keys())}")
-
-
 def normalize_mmlu_pro(example):
     """MMLU-Pro: MCQ 포맷팅 (question + options → user, answer → assistant)"""
     options = example["options"]
@@ -224,7 +193,6 @@ NORMALIZERS = {
     "gsm8k": normalize_gsm8k,
     "MANTA-1M": normalize_manta_1m,
     "orca-math-korean-pref": normalize_orca_math_korean_pref,
-    "KoAlpaca-RealQA": normalize_koalpaca,
     "MMLU-Pro": normalize_mmlu_pro,
 }
 
@@ -238,19 +206,20 @@ def load_and_normalize(config, num_samples, seed=42):
     ds_id = config["id"]
     ds_name = config["name"]
     ds_split = config["split"]
+    ds_config = config.get("config")
     normalizer = NORMALIZERS[ds_name]
 
     print(f"  [{ds_name}] {ds_id} (split={ds_split}) 에서 {num_samples}개 로드 중...")
 
     try:
         # 스트리밍으로 필요한 만큼만 로드
-        raw_ds = load_dataset(ds_id, split=ds_split, streaming=True)
+        raw_ds = load_dataset(ds_id, ds_config, split=ds_split, streaming=True)
         raw_ds = raw_ds.shuffle(seed=seed, buffer_size=5000)
         samples = list(raw_ds.take(num_samples))
     except Exception as e:
         print(f"  [{ds_name}] 스트리밍 로드 실패, 일반 로드 시도: {e}")
         try:
-            raw_ds = load_dataset(ds_id, split=ds_split)
+            raw_ds = load_dataset(ds_id, ds_config, split=ds_split)
             raw_ds = raw_ds.shuffle(seed=seed)
             samples = list(raw_ds.select(range(min(num_samples, len(raw_ds)))))
         except Exception as e2:

@@ -129,6 +129,7 @@ epoch 12
 ### 데이터셋 샘플링 후 시도
 |파이프라인 순서|
 |-------------|
+|Data Sampling(Randomly and Disjointly)|
 |Vocabulary Pruining|
 |Width Pruning with Intermediate Size 3584|
 |KD recovery|
@@ -137,3 +138,16 @@ epoch 12
 |태스크|Overall generate TPS(tokens/s)|정답률|
 |-----|----|-----|
 |gsm8k|503.72|0.5390, 0.5792|
+
+### 데이터셋 샘플링 후 시도 2
+|파이프라인 순서|
+|-------------|
+|Data Sampling(더 많은 데이터)|
+|Vocabulary Pruining|
+|Width Pruning with Intermediate Size 3072|
+|KD recovery|
+|FP8 static Quantization|
+
+|태스크|Overall generate TPS(tokens/s)|정답률|
+|-----|----|-----|
+|gsm8k|674|0.4170, 0.4405|
