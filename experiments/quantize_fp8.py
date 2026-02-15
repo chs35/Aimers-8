@@ -7,7 +7,7 @@ Manta 1M 데이터셋으로 캘리브레이션
 import argparse
 from pathlib import Path
 
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llmcompressor import oneshot
 
@@ -65,10 +65,38 @@ quant_stage:
 """
 
 
-def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048):
-    """Manta 1M 데이터셋에서 캘리브레이션 데이터 준비"""
-    # Manta 1M 데이터셋 로드 (EXAONE-3.5-32B-Instruct로 생성된 합성 데이터)
-    # https://huggingface.co/datasets/LGAI-EXAONE/MANTA-1M
+def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048,
+                                local_dataset_path=None):
+    """캘리브레이션 데이터 준비
+
+    Args:
+        local_dataset_path: 로컬 Arrow 데이터셋 경로 (prepare_dataset.py의 fp8_calib).
+                           지정 시 이 경로에서 로드, 미지정 시 MANTA-1M 사용.
+    """
+    if local_dataset_path:
+        print(f"Loading calibration data from local dataset: {local_dataset_path}")
+        ds = load_from_disk(local_dataset_path)
+        ds = ds.select(range(min(num_samples, len(ds))))
+
+        def process_local(example):
+            text = tokenizer.apply_chat_template(
+                example["conversations"],
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            return tokenizer(
+                text,
+                padding=False,
+                max_length=max_length,
+                truncation=True,
+                add_special_tokens=False,
+            )
+
+        ds = ds.map(process_local, remove_columns=ds.column_names)
+        print(f"Prepared {len(ds)} calibration samples from local dataset")
+        return ds
+
+    # 기본: Manta 1M 데이터셋 로드
     ds = load_dataset(
         "LGAI-EXAONE/MANTA-1M",
         split=f"train[:{num_samples}]"
@@ -76,7 +104,6 @@ def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048):
     ds = ds.shuffle(seed=42)
 
     def process_and_tokenize(example):
-        # Manta 데이터셋 구조에 맞게 텍스트 추출
         text = example.get("text") or example.get("content") or str(example)
         return tokenizer(
             text,
@@ -97,6 +124,7 @@ def quantize_fp8(
     num_samples: int = 512,
     max_length: int = 2048,
     kv_cache_fp8: bool = False,
+    dataset_path: str = None,
 ):
     """FP8 양자화 실행 (llmcompressor 사용)"""
 
@@ -105,6 +133,8 @@ def quantize_fp8(
     print(f"Calibration samples: {num_samples}")
     print(f"Max length: {max_length}")
     print(f"KV Cache FP8: {kv_cache_fp8}")
+    if dataset_path:
+        print(f"Dataset: {dataset_path}")
     print("=" * 60)
 
     # 토크나이저 로드
@@ -121,11 +151,12 @@ def quantize_fp8(
     )
 
     # 캘리브레이션 데이터 준비
-    print("Preparing calibration data from MANTA-1M...")
+    print("Preparing calibration data...")
     ds = prepare_calibration_dataset(
         tokenizer,
         num_samples=num_samples,
-        max_length=max_length
+        max_length=max_length,
+        local_dataset_path=dataset_path,
     )
 
     # 레시피 선택
@@ -192,6 +223,12 @@ def main():
         action="store_true",
         help="Enable FP8 KV cache quantization"
     )
+    parser.add_argument(
+        "--dataset", "-d",
+        type=str,
+        default=None,
+        help="Local calibration dataset path (from prepare_dataset.py fp8_calib)"
+    )
 
     args = parser.parse_args()
 
@@ -205,6 +242,7 @@ def main():
         num_samples=args.num_samples,
         max_length=args.max_length,
         kv_cache_fp8=args.kv_cache_fp8,
+        dataset_path=args.dataset,
     )
 
 

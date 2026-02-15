@@ -40,13 +40,18 @@ Knowledge Distillation Recovery (논문 기반 개선 버전):
 
 GPU 호환: L4(sm_89) 이상 모든 GPU에서 동작
 필요 패키지: pip install peft  (LoRA 모드에서만 필요, Dockerfile에 미포함)
+
+
+python generate/WidthPruning.py --model <모델 겨올> -o <출력 경로, 미지정 시 models>
+
 """
 
 import os
 import json
+import argparse
 import torch
 import torch.nn.functional as F
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, load_from_disk, Dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -72,13 +77,9 @@ def _import_peft():
 # ╚══════════════════════════════════════════════════════════════╝
 
 # ── 모델 & 데이터셋 ──
-MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
-LOCAL_MODEL_DIR = os.path.join("models", MODEL_ID.split("/")[-1])
-TEACHER_MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"  # KD teacher 모델 (None이면 MODEL_ID와 동일)
-TEACHER_LOCAL_MODEL_DIR = os.path.join("models", TEACHER_MODEL_ID.split("/")[-1])
+# MODEL_ID, LOCAL_MODEL_DIR, SAVE_DIR 등은 argparse로 설정 (하단 __main__ 참조)
 DATASET_ID = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
-SAVE_DIR = "models/EXAONE-4.0-1.2B-WidthPruned-KD-Trial10"
 
 # ── Width Pruning (FFN) ──
 PRUNE_FFN = True
@@ -93,7 +94,7 @@ PRUNE_ATTN_HEADS = False
 NUM_HEADS_TO_REMOVE = 2            # 제거할 attention head 수 (KV 그룹 단위), 1.2B 모델은 디코더 당 8그룹(GQA)
 
 # ── Knowledge Distillation ──
-KD_ENABLED = True                  # KD 학습 활성화/비활성화
+KD_ENABLED = False                 # KD 학습 활성화/비활성화 (KD는 KD_Recovery.py로 분리됨)
 KD_TEMPERATURE = 1.0               # soft target temperature (Minitron: LLM에서 ≤1.0이 최적)
 KD_ALPHA_TASK = 0.0                # task loss (CE) 가중치 (Minitron: CE 제거가 최고 성능)
 KD_ALPHA_LOGIT = 0.7               # logit distillation (KL div) 가중치 (주력 loss)
@@ -158,10 +159,22 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # ║  HELPER FUNCTIONS                                            ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-def prepare_calib_texts(tokenizer, dataset_id, dataset_split, num_samples):
-    """캘리브레이션 텍스트 준비 (채팅 템플릿 적용)"""
-    raw_ds = load_dataset(dataset_id, split=dataset_split, streaming=True)
-    samples = list(raw_ds.take(num_samples))
+def prepare_calib_texts(tokenizer, dataset_id, dataset_split, num_samples,
+                        local_dataset_path=None):
+    """캘리브레이션 텍스트 준비 (채팅 템플릿 적용)
+
+    Args:
+        local_dataset_path: 로컬 Arrow 데이터셋 경로 (prepare_dataset.py로 생성).
+                           지정 시 이 경로에서 로드, 미지정 시 HF 스트리밍.
+    """
+    if local_dataset_path:
+        print(f"    로컬 데이터셋 사용: {local_dataset_path}")
+        ds = load_from_disk(local_dataset_path)
+        samples = list(ds.select(range(min(num_samples, len(ds)))))
+    else:
+        raw_ds = load_dataset(dataset_id, split=dataset_split, streaming=True)
+        samples = list(raw_ds.take(num_samples))
+
     texts = []
     for sample in samples:
         text = tokenizer.apply_chat_template(
@@ -644,6 +657,36 @@ class KDTrainer(Trainer):
 if __name__ == "__main__":
 
     # ===========================================================
+    # CLI Arguments
+    # ===========================================================
+    parser = argparse.ArgumentParser(description="Width Pruning + Knowledge Distillation")
+    parser.add_argument("--model", "-m", type=str, default="LGAI-EXAONE/EXAONE-4.0-1.2B",
+                        help="모델 경로 (HuggingFace ID 또는 로컬 경로)")
+    parser.add_argument("--teacher", type=str, default=None,
+                        help="KD Teacher 모델 경로 (기본값: --model과 동일)")
+    parser.add_argument("--output", "-o", type=str, default=None,
+                        help="출력 경로 (기본값: models/<모델명>-WP<intermediate_size>)")
+    parser.add_argument("--dataset", "-d", type=str, default=None,
+                        help="로컬 캘리브레이션 데이터셋 경로 (prepare_dataset.py의 wp_calib)")
+    args = parser.parse_args()
+
+    # 모델 경로 해석
+    MODEL_ID = args.model
+    model_name = os.path.basename(MODEL_ID.rstrip("/\\"))
+    if os.path.isdir(MODEL_ID):
+        LOCAL_MODEL_DIR = MODEL_ID
+    else:
+        LOCAL_MODEL_DIR = os.path.join("models", model_name)
+
+    # Teacher 경로 해석
+    teacher_input = args.teacher or args.model
+    TEACHER_MODEL_ID = teacher_input
+    if os.path.isdir(teacher_input):
+        TEACHER_LOCAL_MODEL_DIR = teacher_input
+    else:
+        TEACHER_LOCAL_MODEL_DIR = os.path.join("models", os.path.basename(teacher_input.rstrip("/\\")))
+
+    # ===========================================================
     # Step 1: 모델 로드 + 아키텍처 정보 출력
     # ===========================================================
     print("=" * 60)
@@ -693,7 +736,8 @@ if __name__ == "__main__":
         print("=" * 60)
 
         calib_texts = prepare_calib_texts(
-            tokenizer, DATASET_ID, DATASET_SPLIT, NUM_CALIB_SAMPLES_PRUNING
+            tokenizer, DATASET_ID, DATASET_SPLIT, NUM_CALIB_SAMPLES_PRUNING,
+            local_dataset_path=args.dataset,
         )
         print(f"  캘리브레이션 샘플 수: {len(calib_texts)}")
 
@@ -982,6 +1026,8 @@ if __name__ == "__main__":
     # ===========================================================
     # Step 7: 저장
     # ===========================================================
+    SAVE_DIR = args.output or os.path.join("models", f"{model_name}-WP{model.config.intermediate_size}")
+
     print("=" * 60)
     print("Step 7: 최종 모델 저장")
     print("=" * 60)

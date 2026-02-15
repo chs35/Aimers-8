@@ -22,6 +22,7 @@ GPU 호환: L4(sm_89) 이상 모든 GPU에서 동작
 import os
 import json
 import math
+import argparse
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset, Dataset
@@ -40,11 +41,9 @@ except ImportError:
 # ╚══════════════════════════════════════════════════════════════╝
 
 # ── 모델 & 데이터셋 ──
-MODEL_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B"
-LOCAL_MODEL_DIR = os.path.join("models", MODEL_ID.split("/")[-1])
+# MODEL_ID, LOCAL_MODEL_DIR, SAVE_DIR 등은 argparse로 설정 (하단 __main__ 참조)
 DATASET_ID = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
-SAVE_DIR = "models/EXAONE-4.0-1.2B-LayerPruned-LoRA"
 
 # ── Layer Pruning (Shortened LLaMA) ──
 NUM_LAYERS_TO_REMOVE = 3           # 제거할 레이어 수 (EXAONE 1.2B = 30 레이어)
@@ -251,6 +250,24 @@ def prune_layers(model, layers_to_remove):
 if __name__ == "__main__":
 
     # ===========================================================
+    # CLI Arguments
+    # ===========================================================
+    parser = argparse.ArgumentParser(description="Layer Pruning + LoRA Recovery")
+    parser.add_argument("--model", "-m", type=str, default="LGAI-EXAONE/EXAONE-4.0-1.2B",
+                        help="모델 경로 (HuggingFace ID 또는 로컬 경로)")
+    parser.add_argument("--output", "-o", type=str, default=None,
+                        help="출력 경로 (기본값: models/<모델명>-LP<제거레이어수>)")
+    args = parser.parse_args()
+
+    # 모델 경로 해석
+    MODEL_ID = args.model
+    model_name = os.path.basename(MODEL_ID.rstrip("/\\"))
+    if os.path.isdir(MODEL_ID):
+        LOCAL_MODEL_DIR = MODEL_ID
+    else:
+        LOCAL_MODEL_DIR = os.path.join("models", model_name)
+
+    # ===========================================================
     # Step 1: 모델 및 토크나이저 로드
     # ===========================================================
     print("=" * 60)
@@ -435,6 +452,8 @@ if __name__ == "__main__":
     # ===========================================================
     # Step 5: 결과 저장
     # ===========================================================
+    SAVE_DIR = args.output or os.path.join("models", f"{model_name}-LP{NUM_LAYERS_TO_REMOVE}")
+
     print("=" * 60)
     print("Step 5: 결과 저장")
     print("=" * 60)
