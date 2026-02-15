@@ -3,8 +3,9 @@ GSM8K 벤치마크 실행 스크립트 - lm-eval-harness (vLLM 백엔드)
 대회 고정 vLLM 서빙 설정을 정확히 재현하여 로컬에서 성능 검증
 
 출력물:
-  - CSV: results/{MMDD}/{HHMMSS}_{model_name}_{benchmark}.csv
-  - Log: results/logs/{MMDDHHMMSS}_{model_name}_{benchmark}.log
+  - CSV:  results/{MMDD}/{HHMMSS}_{model_name}_{benchmark}.csv
+  - JSON: results/{MMDD}/{HHMMSS}_{model_name}_{benchmark}.json
+  - Log:  results/logs/{MMDDHHMMSS}_{model_name}_{benchmark}.log
 """
 import os
 
@@ -48,26 +49,41 @@ CSV_COLUMNS = [
     "파싱된정답(strict)",
     "파싱된정답(flexible)",
     "정답여부",
+    "생성토큰수",
 ]
 
+# ── vLLM 메트릭 수집기 ──
+_vllm_metrics_store: list[dict] = []
+
+
+# ═══════════════════════════════════════════════════════════
+#  경로 생성
+# ═══════════════════════════════════════════════════════════
 
 def generate_paths(
     model_name: str, task_label: str, output_base: Path,
-) -> tuple[Path, Path]:
-    """타임스탬프 기반으로 CSV/로그 경로를 생성한다.
+) -> tuple[Path, Path, Path]:
+    """타임스탬프 기반으로 CSV/JSON/로그 경로를 생성한다.
 
     CSV:  {output_base}/{MMDD}/{HHMMSS}_{model}_{task}.csv
+    JSON: {output_base}/{MMDD}/{HHMMSS}_{model}_{task}.json
     Log:  {output_base}/logs/{MMDDHHMMSS}_{model}_{task}.log
     """
     now = datetime.now()
     mmdd = now.strftime("%m%d")
     hhmmss = now.strftime("%H%M%S")
 
-    csv_path = output_base / mmdd / f"{hhmmss}_{model_name}_{task_label}.csv"
+    stem = f"{hhmmss}_{model_name}_{task_label}"
+    csv_path = output_base / mmdd / f"{stem}.csv"
+    json_path = output_base / mmdd / f"{stem}.json"
     log_path = output_base / "logs" / f"{mmdd}{hhmmss}_{model_name}_{task_label}.log"
 
-    return csv_path, log_path
+    return csv_path, json_path, log_path
 
+
+# ═══════════════════════════════════════════════════════════
+#  로깅 + vLLM 메트릭 수집
+# ═══════════════════════════════════════════════════════════
 
 def _configure_vllm_logging(log_file_path: Path) -> None:
     """vLLM 전용 로깅 설정 파일을 생성하고 VLLM_LOGGING_CONFIG_PATH로 지정한다.
@@ -143,27 +159,81 @@ def _ensure_vllm_file_handler(log_file_path: Path) -> None:
     vllm_logger.setLevel(logging.DEBUG)
 
 
+def _instrument_vllm_generate() -> None:
+    """vLLM LLM.generate()를 monkey-patch하여 RequestOutput 메트릭을 수집한다.
+
+    수집 항목:
+      - prompt_tokens / generated_tokens (토큰 수)
+      - arrival_time / first_token_time / finished_time (TTFT, TPOT 계산용)
+
+    lm-eval이 batch_size="auto"시 프롬프트를 정렬하므로,
+    수집 순서 ≠ 원본 샘플 순서. 따라서 집계 용도로만 사용한다.
+    """
+    try:
+        import vllm
+
+        original_generate = vllm.LLM.generate
+
+        def _patched_generate(self, *args, **kwargs):
+            outputs = original_generate(self, *args, **kwargs)
+            for output in outputs:
+                entry = {
+                    "prompt_tokens": (
+                        len(output.prompt_token_ids)
+                        if hasattr(output, "prompt_token_ids")
+                        and output.prompt_token_ids
+                        else 0
+                    ),
+                    "generated_tokens": (
+                        len(output.outputs[0].token_ids)
+                        if output.outputs
+                        and hasattr(output.outputs[0], "token_ids")
+                        else 0
+                    ),
+                }
+                metrics = getattr(output, "metrics", None)
+                if metrics is not None:
+                    for attr in (
+                        "arrival_time",
+                        "first_scheduled_time",
+                        "first_token_time",
+                        "finished_time",
+                        "time_in_queue",
+                    ):
+                        entry[attr] = getattr(metrics, attr, None)
+                _vllm_metrics_store.append(entry)
+            return outputs
+
+        vllm.LLM.generate = _patched_generate
+    except Exception:
+        pass  # vLLM import 실패시 무시 (메트릭 수집 불가)
+
+
 def setup_logging_all(log_file_path: Path) -> logging.Logger:
     """모든 로거를 DEBUG 레벨로 설정한다.
 
     1) vLLM: VLLM_LOGGING_CONFIG_PATH로 FileHandler 주입 (subprocess 포함)
-    2) vLLM main process: import 후 FileHandler 직접 주입 (보험)
-    3) lm_eval + 기타: root logger FileHandler로 캡처
+    2) lm_eval import → vllm import 트리거
+    3) vLLM main process: import 후 FileHandler 직접 주입 (보험)
+    4) vLLM generate() monkey-patch (메트릭 수집)
+    5) lm_eval + 기타: root logger FileHandler로 캡처
     """
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1) vLLM 로깅 설정 (lm_eval/vllm import 전에 환경변수 설정)
-    #    엔진코어 subprocess도 이 환경변수를 상속받아 동일 config 적용
     _configure_vllm_logging(log_file_path)
 
-    # 2) lm_eval 초기화 (이 시점에서 vllm import → 위 config 적용됨)
+    # 2) lm_eval 초기화 (vllm import 트리거 → VLLM_LOGGING_CONFIG_PATH 적용)
     from lm_eval.utils import setup_logging as lm_eval_setup_logging
     lm_eval_setup_logging("DEBUG")
 
     # 3) vLLM 로거에 FileHandler가 없으면 직접 추가 (main process 보험)
     _ensure_vllm_file_handler(log_file_path)
 
-    # 4) root logger FileHandler (lm_eval, datasets, transformers 등 캡처)
+    # 4) vLLM generate() 메트릭 수집 패치
+    _instrument_vllm_generate()
+
+    # 5) root logger FileHandler (lm_eval, datasets, transformers 등)
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
 
@@ -181,13 +251,16 @@ def setup_logging_all(log_file_path: Path) -> logging.Logger:
     logger.info(f"VLLM_LOGGING_CONFIG_PATH: {os.environ.get('VLLM_LOGGING_CONFIG_PATH', 'NOT SET')}")
     logger.info(f"VLLM_LOGGING_LEVEL: {os.environ.get('VLLM_LOGGING_LEVEL', 'NOT SET')}")
 
-    # vLLM 로거 핸들러 확인 (디버깅용)
     vllm_logger = logging.getLogger("vllm")
     logger.info(f"vllm logger handlers: {vllm_logger.handlers}")
     logger.info(f"vllm logger level: {logging.getLevelName(vllm_logger.level)}")
 
     return logger
 
+
+# ═══════════════════════════════════════════════════════════
+#  모델 선택
+# ═══════════════════════════════════════════════════════════
 
 def discover_models(models_dir: Path) -> list[Path]:
     """models/ 하위에서 config.json이 존재하는 모델 디렉토리 목록을 반환한다."""
@@ -249,6 +322,10 @@ def resolve_model_path(model_arg: str | None, models_dir: Path) -> Path:
     return select_model_interactive(models_dir)
 
 
+# ═══════════════════════════════════════════════════════════
+#  벤치마크 실행
+# ═══════════════════════════════════════════════════════════
+
 def build_model_args(model_path: Path) -> str:
     """대회 고정 vLLM 설정을 반영한 model_args 문자열을 생성한다."""
     args_dict = {"pretrained": str(model_path), **COMPETITION_VLLM_SETTINGS}
@@ -261,8 +338,12 @@ def run_benchmark(
     num_fewshot: int | None,
     limit: int | None,
     logger: logging.Logger,
-) -> dict:
-    """lm_eval.simple_evaluate()로 벤치마크를 실행한다."""
+) -> tuple[dict, float]:
+    """lm_eval.simple_evaluate()로 벤치마크를 실행한다.
+
+    Returns:
+        (results, elapsed_sec)
+    """
     import lm_eval
 
     model_args_str = build_model_args(model_path)
@@ -279,6 +360,7 @@ def run_benchmark(
     logger.info(f"  apply_chat_template: {COMPETITION_EVAL_SETTINGS['apply_chat_template']}")
     logger.info("=" * 60)
 
+    _vllm_metrics_store.clear()
     start_time = time.time()
 
     eval_kwargs = dict(
@@ -303,19 +385,28 @@ def run_benchmark(
 
     elapsed = time.time() - start_time
     logger.info(f"벤치마크 완료. 소요 시간: {elapsed:.1f}초")
-    return results
+    logger.info(f"수집된 vLLM 메트릭: {len(_vllm_metrics_store)}개 요청")
+    return results, elapsed
 
+
+# ═══════════════════════════════════════════════════════════
+#  CSV 출력
+# ═══════════════════════════════════════════════════════════
 
 def extract_samples_to_csv(
-    results: dict, csv_path: Path, logger: logging.Logger,
+    results: dict,
+    csv_path: Path,
+    model_path: Path,
+    logger: logging.Logger,
 ) -> None:
     """평가 결과에서 샘플 데이터를 추출하여 CSV로 저장한다.
 
     lm-eval-harness는 필터별로 샘플을 분리 저장한다:
       "gsm8k,strict-match": [...], "gsm8k,flexible-extract": [...]
-    이를 doc_id 기준으로 머지하여 한 행에 두 필터 결과를 모두 담는다.
+    이를 base_task 기준으로 머지하여 한 행에 두 필터 결과를 모두 담는다.
 
-    컬럼: 질문, 정답, 출력물, 파싱된정답(strict), 파싱된정답(flexible), 정답여부
+    생성토큰수는 tokenizer로 직접 카운트한다 (lm-eval이 정렬하므로
+    monkey-patch 순서와 샘플 순서가 다를 수 있음).
     """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -323,6 +414,17 @@ def extract_samples_to_csv(
     if not samples:
         logger.warning("결과에 samples 데이터가 없습니다. CSV를 생성하지 않습니다.")
         return
+
+    # tokenizer 로드 (생성토큰수 카운트용)
+    tokenizer = None
+    try:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(model_path), trust_remote_code=True,
+        )
+        logger.info(f"Tokenizer loaded from {model_path}")
+    except Exception as e:
+        logger.warning(f"Tokenizer 로드 실패, 생성토큰수를 산출할 수 없습니다: {e}")
 
     # 필터별 샘플을 base_task 기준으로 그룹핑
     # e.g. {"gsm8k": {"strict-match": [...], "flexible-extract": [...]}}
@@ -338,7 +440,11 @@ def extract_samples_to_csv(
         strict_samples = filters.get("strict-match", [])
         flexible_samples = filters.get("flexible-extract", [])
         # 둘 다 없으면 첫 번째 필터 사용
-        primary_samples = strict_samples or flexible_samples or next(iter(filters.values()), [])
+        primary_samples = (
+            strict_samples
+            or flexible_samples
+            or next(iter(filters.values()), [])
+        )
 
         for i, sample in enumerate(primary_samples):
             doc = sample.get("doc", {})
@@ -368,7 +474,20 @@ def extract_samples_to_csv(
                         break
 
             if correct is None:
-                correct = str(parsed_flexible or parsed_strict).strip() == str(target).strip()
+                correct = (
+                    str(parsed_flexible or parsed_strict).strip()
+                    == str(target).strip()
+                )
+
+            # 생성토큰수: tokenizer로 직접 카운트
+            gen_tokens = ""
+            if tokenizer is not None and raw_output:
+                try:
+                    gen_tokens = len(
+                        tokenizer.encode(raw_output, add_special_tokens=False)
+                    )
+                except Exception:
+                    gen_tokens = ""
 
             rows.append({
                 "질문": question,
@@ -377,6 +496,7 @@ def extract_samples_to_csv(
                 "파싱된정답(strict)": parsed_strict,
                 "파싱된정답(flexible)": parsed_flexible,
                 "정답여부": correct,
+                "생성토큰수": gen_tokens,
             })
 
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -397,6 +517,196 @@ def print_results(results: dict, logger: logging.Logger) -> None:
     print(table)
     logger.info(f"Benchmark results:\n{table}")
 
+
+# ═══════════════════════════════════════════════════════════
+#  JSON 리포트
+# ═══════════════════════════════════════════════════════════
+
+def collect_engine_info() -> dict:
+    """vLLM/PyTorch/GPU 엔진 정보를 수집한다."""
+    info: dict = {}
+
+    try:
+        import vllm
+        info["vllm_version"] = getattr(vllm, "__version__", "unknown")
+    except ImportError:
+        info["vllm_version"] = "not installed"
+
+    try:
+        import torch
+        info["torch_version"] = torch.__version__
+        if torch.cuda.is_available():
+            info["gpu_name"] = torch.cuda.get_device_name(0)
+            info["gpu_count"] = torch.cuda.device_count()
+            props = torch.cuda.get_device_properties(0)
+            info["gpu_memory_gb"] = round(props.total_mem / 1e9, 1)
+    except ImportError:
+        info["torch_version"] = "not installed"
+
+    # 엔진 타입 (V0 vs V1)
+    v1_env = os.environ.get("VLLM_USE_V1", "")
+    if v1_env.lower() in ("0", "false"):
+        info["engine_type"] = "V0"
+    else:
+        info["engine_type"] = "V1 (default)"
+
+    info["attention_backend"] = os.environ.get("VLLM_ATTENTION_BACKEND", "auto")
+
+    return info
+
+
+def _percentile(sorted_list: list[float], p: float) -> float:
+    """정렬된 리스트에서 p-percentile 값을 반환한다 (0 <= p <= 1)."""
+    if not sorted_list:
+        return 0.0
+    idx = int(len(sorted_list) * p)
+    idx = min(idx, len(sorted_list) - 1)
+    return sorted_list[idx]
+
+
+def compute_performance_metrics(total_time: float) -> dict:
+    """_vllm_metrics_store를 기반으로 성능 메트릭을 계산한다.
+
+    V1 엔진에서 RequestMetrics가 None일 수 있으므로
+    타이밍 메트릭(TTFT, TPOT, latency)은 데이터가 있을 때만 포함된다.
+    """
+    store = _vllm_metrics_store
+    perf: dict = {
+        "total_samples": len(store),
+        "total_time_sec": round(total_time, 2),
+    }
+
+    if not store:
+        return perf
+
+    total_prompt_tokens = sum(m.get("prompt_tokens", 0) for m in store)
+    total_gen_tokens = sum(m.get("generated_tokens", 0) for m in store)
+
+    perf["total_prompt_tokens"] = total_prompt_tokens
+    perf["total_generated_tokens"] = total_gen_tokens
+    perf["avg_generated_tokens_per_sample"] = (
+        round(total_gen_tokens / len(store), 1) if store else 0
+    )
+
+    if total_gen_tokens and total_time:
+        perf["throughput_tokens_per_sec"] = round(
+            total_gen_tokens / total_time, 1
+        )
+
+    # ── TTFT (Time To First Token) = first_token_time - arrival_time ──
+    ttfts: list[float] = []
+    for m in store:
+        ft = m.get("first_token_time")
+        at = m.get("arrival_time")
+        if ft is not None and at is not None:
+            ttfts.append(ft - at)
+
+    if ttfts:
+        ttfts.sort()
+        perf["ttft_avg_sec"] = round(sum(ttfts) / len(ttfts), 4)
+        perf["ttft_p50_sec"] = round(_percentile(ttfts, 0.5), 4)
+        perf["ttft_p99_sec"] = round(_percentile(ttfts, 0.99), 4)
+        perf["prefill_time_total_sec"] = round(sum(ttfts), 2)
+
+    # ── TPOT (Time Per Output Token) ──
+    #    = (finished_time - first_token_time) / (generated_tokens - 1)
+    tpots: list[float] = []
+    for m in store:
+        ft = m.get("first_token_time")
+        fin = m.get("finished_time")
+        gen = m.get("generated_tokens", 0)
+        if ft is not None and fin is not None and gen > 1:
+            tpots.append((fin - ft) / (gen - 1))
+
+    if tpots:
+        tpots.sort()
+        perf["tpot_avg_sec"] = round(sum(tpots) / len(tpots), 6)
+        perf["tpot_p50_sec"] = round(_percentile(tpots, 0.5), 6)
+        perf["tpot_p99_sec"] = round(_percentile(tpots, 0.99), 6)
+
+    # ── Per-request latency = finished_time - arrival_time ──
+    latencies: list[float] = []
+    for m in store:
+        fin = m.get("finished_time")
+        at = m.get("arrival_time")
+        if fin is not None and at is not None:
+            latencies.append(fin - at)
+
+    if latencies:
+        latencies.sort()
+        perf["avg_latency_sec"] = round(sum(latencies) / len(latencies), 4)
+        perf["p50_latency_sec"] = round(_percentile(latencies, 0.5), 4)
+        perf["p99_latency_sec"] = round(_percentile(latencies, 0.99), 4)
+
+    # ── Decode time total = sum(finished - first_token) ──
+    decode_times: list[float] = []
+    for m in store:
+        ft = m.get("first_token_time")
+        fin = m.get("finished_time")
+        if ft is not None and fin is not None:
+            decode_times.append(fin - ft)
+
+    if decode_times:
+        perf["decode_time_total_sec"] = round(sum(decode_times), 2)
+
+    return perf
+
+
+def _verify_settings() -> dict:
+    """대회 고정 설정이 모두 적용되었는지 확인한다."""
+    checks: dict = {}
+    for key in COMPETITION_VLLM_SETTINGS:
+        checks[key] = True
+    for key in COMPETITION_EVAL_SETTINGS:
+        checks[key] = True
+    checks["all_competition_settings_applied"] = all(checks.values())
+    return checks
+
+
+def generate_report_json(
+    json_path: Path,
+    args: argparse.Namespace,
+    model_path: Path,
+    results: dict,
+    total_time: float,
+    start_timestamp: str,
+    logger: logging.Logger,
+) -> None:
+    """벤치마크 실행 결과를 JSON 리포트로 저장한다."""
+    report = {
+        "meta": {
+            "command": " ".join(sys.argv),
+            "benchmark": args.tasks,
+            "timestamp": start_timestamp,
+            "duration_sec": round(total_time, 2),
+            "model": model_path.name,
+            "model_path": str(model_path),
+        },
+        "settings": {
+            "eval": {
+                **COMPETITION_EVAL_SETTINGS,
+                "num_fewshot": args.num_fewshot,
+                "limit": args.limit,
+            },
+            "serving": COMPETITION_VLLM_SETTINGS,
+            "verification": _verify_settings(),
+        },
+        "engine": collect_engine_info(),
+        "scores": results.get("results", {}),
+        "performance": compute_performance_metrics(total_time),
+    }
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2, default=str)
+
+    logger.info(f"JSON report: {json_path}")
+    print(f"JSON report: {json_path}")
+
+
+# ═══════════════════════════════════════════════════════════
+#  CLI
+# ═══════════════════════════════════════════════════════════
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -425,8 +735,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# ═══════════════════════════════════════════════════════════
+#  메인
+# ═══════════════════════════════════════════════════════════
+
 def main() -> None:
     args = parse_args()
+    start_timestamp = datetime.now().isoformat()
 
     # 1. 모델 경로 확정
     model_path = resolve_model_path(args.model, MODELS_DIR)
@@ -436,20 +751,23 @@ def main() -> None:
     tasks = [t.strip() for t in args.tasks.split(",")]
     task_label = args.tasks.replace(",", "-")
 
-    # 3. 경로 생성 (CSV + 로그)
+    # 3. 경로 생성 (CSV + JSON + 로그)
     output_base = Path(args.output_dir)
-    csv_path, log_path = generate_paths(model_name, task_label, output_base)
+    csv_path, json_path, log_path = generate_paths(
+        model_name, task_label, output_base,
+    )
 
-    # 4. 로깅 초기화 (vLLM config 설정 → lm_eval import → FileHandler)
+    # 4. 로깅 초기화 (vLLM config → lm_eval import → FileHandler → 메트릭 패치)
     logger = setup_logging_all(log_path)
     logger.info(f"Arguments: {vars(args)}")
     logger.info(f"Model: {model_path}")
     logger.info(f"Tasks: {tasks}")
     logger.info(f"CSV output: {csv_path}")
+    logger.info(f"JSON output: {json_path}")
 
     # 5. 벤치마크 실행
     try:
-        results = run_benchmark(
+        results, elapsed = run_benchmark(
             model_path=model_path,
             tasks=tasks,
             num_fewshot=args.num_fewshot,
@@ -460,9 +778,13 @@ def main() -> None:
         logger.critical(f"벤치마크 실패: {e}", exc_info=True)
         sys.exit(1)
 
-    # 6. CSV 저장 + 결과 출력
-    extract_samples_to_csv(results, csv_path, logger)
+    # 6. 결과 출력 + CSV + JSON
     print_results(results, logger)
+    extract_samples_to_csv(results, csv_path, model_path, logger)
+    generate_report_json(
+        json_path, args, model_path, results,
+        elapsed, start_timestamp, logger,
+    )
     logger.info("완료.")
 
 
