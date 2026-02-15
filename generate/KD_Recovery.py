@@ -43,8 +43,12 @@ import os
 import json
 import argparse
 import shutil
+from datetime import datetime
 import torch
 import torch.nn.functional as F
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from datasets import load_dataset, load_from_disk, Dataset
 from transformers import (
     AutoModelForCausalLM,
@@ -131,7 +135,7 @@ class KDTrainer(Trainer):
     def __init__(self, teacher_model, temperature, alpha_task, alpha_logit, alpha_hidden,
                  alpha_attn=0.0, alpha_embed=0.0,
                  use_cosine_hidden=True, use_akl=True, use_dynamic_alpha=True,
-                 total_train_steps=None, **kwargs):
+                 total_train_steps=None, loss_history=None, **kwargs):
         super().__init__(**kwargs)
         self.teacher = teacher_model
         self.temperature = temperature
@@ -145,6 +149,9 @@ class KDTrainer(Trainer):
         self.use_dynamic_alpha = use_dynamic_alpha
         self.total_train_steps = total_train_steps
         self._current_step = 0
+        self.loss_history = loss_history if loss_history is not None else {
+            'total': [], 'kd_logit': [], 'hidden': [], 'task': [],
+        }
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         self._current_step += 1
@@ -277,12 +284,79 @@ class KDTrainer(Trainer):
         if self.use_dynamic_alpha and self.alpha_hidden > 0:
             self._kd_metrics["dynamic_alpha"] = alpha_dynamic.item()
 
+        # Loss 히스토리 기록
+        self.loss_history['total'].append(total_loss.detach().item())
+        if self.alpha_logit > 0 or (self.use_dynamic_alpha and self.alpha_hidden > 0):
+            self.loss_history['kd_logit'].append(kd_logit_loss.detach().item())
+        if self.alpha_hidden > 0:
+            self.loss_history['hidden'].append(hidden_loss.detach().item())
+        if self.alpha_task > 0:
+            self.loss_history['task'].append(task_loss.detach().item())
+
         return (total_loss, student_outputs) if return_outputs else total_loss
 
     def log(self, logs, *args, **kwargs):
         if hasattr(self, "_kd_metrics"):
             logs.update(self._kd_metrics)
         super().log(logs, *args, **kwargs)
+
+
+def plot_losses(loss_history, config, save_dir='KD_Loss'):
+    """학습 Loss 그래프를 개별 파일로 생성하여 타임스탬프 폴더에 저장"""
+    plots = []
+
+    # 종합 Loss (항상 표시)
+    if loss_history['total']:
+        plots.append(('Total_Loss', 'Total Loss', loss_history['total']))
+
+    # KL Divergence (alpha_logit > 0 또는 dynamic alpha 사용 시)
+    show_kl = config['alpha_logit'] > 0 or (config['use_dynamic_alpha'] and config['alpha_hidden'] > 0)
+    if show_kl and loss_history['kd_logit']:
+        if config['use_akl']:
+            kl_fname = 'KL_Divergence_AKL'
+            kl_label = 'KL Divergence (AKL)'
+        else:
+            kl_fname = 'KL_Divergence_FKL'
+            kl_label = 'KL Divergence (FKL)'
+        plots.append((kl_fname, kl_label, loss_history['kd_logit']))
+
+    # Hidden State Loss (alpha_hidden > 0)
+    if config['alpha_hidden'] > 0 and loss_history['hidden']:
+        if config['use_cosine_hidden']:
+            h_fname = 'Hidden_State_CosineSimilarity'
+            h_label = 'Hidden State Loss (Cosine Similarity)'
+        else:
+            h_fname = 'Hidden_State_MSE'
+            h_label = 'Hidden State Loss (MSE)'
+        plots.append((h_fname, h_label, loss_history['hidden']))
+
+    # Task Loss (alpha_task > 0)
+    if config['alpha_task'] > 0 and loss_history['task']:
+        plots.append(('Task_Loss_CE', 'Task Loss (CE)', loss_history['task']))
+
+    if not plots:
+        print("  표시할 Loss 데이터가 없습니다.")
+        return
+
+    # 타임스탬프 하위 폴더 생성
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sub_dir = os.path.join(save_dir, timestamp)
+    os.makedirs(sub_dir, exist_ok=True)
+
+    # 각 Loss를 개별 파일로 저장
+    for fname, title, data in plots:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(range(len(data)), data, linewidth=0.8, color='#1f77b4')
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Loss')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        fpath = os.path.join(sub_dir, f"{fname}.png")
+        plt.savefig(fpath, dpi=150, bbox_inches='tight')
+        plt.close()
+
+    print(f"  Loss 그래프 저장 ({len(plots)}개): {sub_dir}/")
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -484,6 +558,8 @@ if __name__ == "__main__":
     steps_per_epoch = max(len(train_ds) // (KD_BATCH_SIZE * KD_GRAD_ACCUM), 1)
     total_train_steps = steps_per_epoch * KD_EPOCHS
 
+    loss_history = {'total': [], 'kd_logit': [], 'hidden': [], 'task': []}
+
     trainer = KDTrainer(
         teacher_model=teacher_model,
         temperature=KD_TEMPERATURE,
@@ -496,6 +572,7 @@ if __name__ == "__main__":
         use_akl=KD_USE_AKL,
         use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
         total_train_steps=total_train_steps,
+        loss_history=loss_history,
         model=model,
         args=training_args,
         train_dataset=train_ds,
@@ -523,6 +600,61 @@ if __name__ == "__main__":
 
     trainer.train()
     print("  KD 학습 완료!")
+
+    # ===========================================================
+    # Step 5.5: 인터랙티브 추가 학습 루프
+    # ===========================================================
+    total_epochs_trained = KD_EPOCHS
+    kd_config = {
+        'alpha_logit': KD_ALPHA_LOGIT,
+        'alpha_hidden': KD_ALPHA_HIDDEN,
+        'alpha_task': KD_ALPHA_TASK,
+        'use_akl': KD_USE_AKL,
+        'use_cosine_hidden': KD_USE_COSINE_HIDDEN,
+        'use_dynamic_alpha': KD_USE_DYNAMIC_ALPHA,
+    }
+
+    while True:
+        # Loss 그래프 표시
+        plot_losses(loss_history, kd_config)
+
+        # 사용자에게 추가 학습 여부 질문
+        print()
+        print("-" * 60)
+        print(f"  현재까지 총 {total_epochs_trained} epoch 학습 완료.")
+        try:
+            extra_input = input("  추가 학습할 epoch 수를 입력하세요 (0: 저장 후 종료): ").strip()
+            extra_epochs = int(extra_input)
+        except (ValueError, EOFError, KeyboardInterrupt):
+            extra_epochs = 0
+
+        if extra_epochs <= 0:
+            print("  학습 종료. 모델 저장을 시작합니다...")
+            break
+
+        print(f"\n  {extra_epochs} epoch 추가 학습 시작...")
+        total_epochs_trained += extra_epochs
+
+        # Training args 업데이트
+        training_args = TrainingArguments(
+            output_dir="./kd_recovery_output",
+            per_device_train_batch_size=KD_BATCH_SIZE,
+            gradient_accumulation_steps=KD_GRAD_ACCUM,
+            num_train_epochs=extra_epochs,
+            learning_rate=learning_rate,
+            bf16=True,
+            gradient_checkpointing=True,
+            logging_steps=5,
+            logging_first_step=True,
+            save_strategy="no",
+            report_to="none",
+            remove_unused_columns=False,
+            disable_tqdm=False,
+        )
+        trainer.args = training_args
+        trainer.total_train_steps = steps_per_epoch * total_epochs_trained
+        trainer.train()
+        print(f"  추가 {extra_epochs} epoch 학습 완료! (총 {total_epochs_trained} epoch)")
 
     # ===========================================================
     # Step 6: 후처리 및 저장
@@ -569,7 +701,7 @@ if __name__ == "__main__":
         "lora_rank": LORA_RANK if USE_LORA else None,
         "direct_train_modules": DIRECT_TRAIN_MODULES if not USE_LORA else None,
         "learning_rate": learning_rate,
-        "epochs": KD_EPOCHS,
+        "epochs": total_epochs_trained,
         "train_samples": len(train_ds),
         "student_params": student_params,
     }
@@ -590,5 +722,6 @@ if __name__ == "__main__":
     print(f"  Student:   {MODEL_ID}")
     print(f"  Teacher:   {TEACHER_MODEL_ID}")
     print(f"  학습 모드: {mode_str}")
+    print(f"  총 epochs: {total_epochs_trained}")
     print(f"  개선 기법: {features_str}")
     print(f"  저장 위치: {SAVE_DIR}/")
