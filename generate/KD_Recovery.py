@@ -388,7 +388,7 @@ if __name__ == "__main__":
     if args.dataset:
         print(f"  로컬 데이터셋 사용: {args.dataset}")
         train_ds = load_from_disk(args.dataset)
-        train_ds = train_ds.select(range(min(NUM_TRAIN_SAMPLES, len(train_ds))))
+        # 로컬 데이터셋은 prepare_dataset.py에서 이미 샘플 수가 결정됨 → 전체 사용
     else:
         raw_ds = load_dataset(DATASET_ID, split=DATASET_SPLIT, streaming=True)
         kd_data = list(raw_ds.take(NUM_TRAIN_SAMPLES))
@@ -570,7 +570,7 @@ if __name__ == "__main__":
         "direct_train_modules": DIRECT_TRAIN_MODULES if not USE_LORA else None,
         "learning_rate": learning_rate,
         "epochs": KD_EPOCHS,
-        "train_samples": NUM_TRAIN_SAMPLES,
+        "train_samples": len(train_ds),
         "student_params": student_params,
     }
     meta_path = os.path.join(SAVE_DIR, "kd_metadata.json")

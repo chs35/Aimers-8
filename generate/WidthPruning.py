@@ -22,6 +22,7 @@ KD Recovery는 별도 스크립트(KD_Recovery.py)에서 수행.
 
 GPU 호환: L4(sm_89) 이상 모든 GPU에서 동작
 
+
 #사용 예시
 python generate/WidthPruning.py --model models/EXAONE-4.0-1.2B       
   --target-size 3072
@@ -76,7 +77,8 @@ def prepare_calib_texts(tokenizer, dataset_id, dataset_split, num_samples,
     if local_dataset_path:
         print(f"    로컬 데이터셋 사용: {local_dataset_path}")
         ds = load_from_disk(local_dataset_path)
-        samples = list(ds.select(range(min(num_samples, len(ds)))))
+        # 로컬 데이터셋은 prepare_dataset.py에서 이미 샘플 수가 결정됨 → 전체 사용                                 
+        samples = list(ds)
     else:
         raw_ds = load_dataset(dataset_id, split=dataset_split, streaming=True)
         samples = list(raw_ds.take(num_samples))

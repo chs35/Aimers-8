@@ -76,7 +76,7 @@ def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048,
     if local_dataset_path:
         print(f"Loading calibration data from local dataset: {local_dataset_path}")
         ds = load_from_disk(local_dataset_path)
-        ds = ds.select(range(min(num_samples, len(ds))))
+        # 로컬 데이터셋은 prepare_dataset.py에서 이미 샘플 수가 결정됨 → 전체 사용
 
         def process_local(example):
             text = tokenizer.apply_chat_template(
@@ -163,7 +163,8 @@ def quantize_fp8(
     recipe = FP8_KV_CACHE_RECIPE if kv_cache_fp8 else FP8_RECIPE
 
     # 양자화 실행 (oneshot calibration)
-    print("Running FP8 quantization with static calibration...")
+    actual_samples = len(ds)
+    print(f"Running FP8 quantization with static calibration ({actual_samples} samples)...")
     oneshot(
         model=model,
         dataset=ds,
@@ -171,7 +172,7 @@ def quantize_fp8(
         save_compressed=True,
         output_dir=output_path,
         max_seq_length=max_length,
-        num_calibration_samples=num_samples,
+        num_calibration_samples=actual_samples,
     )
 
     # 토크나이저 저장

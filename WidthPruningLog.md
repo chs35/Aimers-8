@@ -125,3 +125,15 @@ epoch 12
 |태스크|TPOT(ms/token)|정답률(%)|
 |-----|----|-----|
 |gsm8k|||
+
+### 데이터셋 샘플링 후 시도
+|파이프라인 순서|
+|-------------|
+|Vocabulary Pruining|
+|Width Pruning with Intermediate Size 3584|
+|KD recovery|
+|FP8 static Quantization|
+
+|태스크|Overall generate TPS(tokens/s)|정답률|
+|-----|----|-----|
+|gsm8k|503.72|0.5390, 0.5792|
