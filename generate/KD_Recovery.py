@@ -372,7 +372,7 @@ class KDTrainer(Trainer):
             self.loss_history['kd_logit'].append(kd_logit_loss.detach().item())
         if self.alpha_hidden > 0:
             self.loss_history['hidden'].append(hidden_loss.detach().item())
-            self.loss_history['hidden_uniform'].append(hidden_loss_uniform.item())
+            self.loss_history.setdefault('hidden_uniform', []).append(hidden_loss_uniform.item())
         if self.alpha_task > 0:
             self.loss_history['task'].append(task_loss.detach().item())
 
