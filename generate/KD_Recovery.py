@@ -161,6 +161,7 @@ class KDTrainer(Trainer):
         self._current_step = 0
         self.loss_history = loss_history if loss_history is not None else {
             'total': [], 'kd_logit': [], 'hidden': [], 'task': [],
+            'hidden_uniform': [],
         }
         self._optimizer_type = optimizer_type
         self._muon_lr = muon_lr
@@ -287,6 +288,19 @@ class KDTrainer(Trainer):
                 else:
                     hidden_loss = hidden_loss + w * F.mse_loss(s.float(), t.float())
 
+        # Uniform hidden loss (고정 균등 평균 — progressive 영향 없는 순수 지표)
+        with torch.no_grad():
+            if self.use_cosine_hidden:
+                hidden_loss_uniform = sum(
+                    1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
+                    for s, t in zip(student_hidden, teacher_hidden)
+                ) / len(student_hidden)
+            else:
+                hidden_loss_uniform = sum(
+                    F.mse_loss(s.float(), t.float())
+                    for s, t in zip(student_hidden, teacher_hidden)
+                ) / len(student_hidden)
+
         # ── 3) Attention Map Transfer ──
         attn_loss = torch.tensor(0.0, device=student_logits.device)
         if need_attn:
@@ -341,6 +355,7 @@ class KDTrainer(Trainer):
             "task_loss": task_loss.detach().item(),
             "kd_logit_loss": kd_logit_loss.detach().item(),
             "hidden_loss": hidden_loss.detach().item(),
+            "hidden_loss_uniform": hidden_loss_uniform.item(),
         }
         if need_attn:
             self._kd_metrics["attn_loss"] = attn_loss.detach().item()
@@ -357,6 +372,7 @@ class KDTrainer(Trainer):
             self.loss_history['kd_logit'].append(kd_logit_loss.detach().item())
         if self.alpha_hidden > 0:
             self.loss_history['hidden'].append(hidden_loss.detach().item())
+            self.loss_history['hidden_uniform'].append(hidden_loss_uniform.item())
         if self.alpha_task > 0:
             self.loss_history['task'].append(task_loss.detach().item())
 
@@ -433,6 +449,7 @@ class KDTrainer(Trainer):
 def plot_losses(loss_history, config, save_dir='KD_Loss'):
     """학습 Loss 그래프를 개별 파일로 생성하여 타임스탬프 폴더에 저장"""
     plots = []
+    dual_plots = []
 
     # 종합 Loss (항상 표시)
     if loss_history['total']:
@@ -449,21 +466,22 @@ def plot_losses(loss_history, config, save_dir='KD_Loss'):
             kl_label = 'KL Divergence (FKL)'
         plots.append((kl_fname, kl_label, loss_history['kd_logit']))
 
-    # Hidden State Loss (alpha_hidden > 0)
+    # Hidden State Loss (alpha_hidden > 0) — progressive + uniform 두 라인
     if config['alpha_hidden'] > 0 and loss_history['hidden']:
-        if config['use_cosine_hidden']:
-            h_fname = 'Hidden_State_CosineSimilarity'
-            h_label = 'Hidden State Loss (Cosine Similarity)'
-        else:
-            h_fname = 'Hidden_State_MSE'
-            h_label = 'Hidden State Loss (MSE)'
-        plots.append((h_fname, h_label, loss_history['hidden']))
+        metric_type = 'Cosine Similarity' if config['use_cosine_hidden'] else 'MSE'
+        # dual plot: progressive + uniform 함께
+        dual_plots.append((
+            f'Hidden_State_{metric_type.replace(" ", "")}',
+            f'Hidden State Loss ({metric_type})',
+            loss_history['hidden'],
+            loss_history.get('hidden_uniform', []),
+        ))
 
     # Task Loss (alpha_task > 0)
     if config['alpha_task'] > 0 and loss_history['task']:
         plots.append(('Task_Loss_CE', 'Task Loss (CE)', loss_history['task']))
 
-    if not plots:
+    if not plots and not dual_plots:
         print("  표시할 Loss 데이터가 없습니다.")
         return
 
@@ -472,7 +490,9 @@ def plot_losses(loss_history, config, save_dir='KD_Loss'):
     sub_dir = os.path.join(save_dir, timestamp)
     os.makedirs(sub_dir, exist_ok=True)
 
-    # 각 Loss를 개별 파일로 저장
+    total_saved = 0
+
+    # 단일 라인 플롯
     for fname, title, data in plots:
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.plot(range(len(data)), data, linewidth=0.8, color='#1f77b4')
@@ -484,8 +504,28 @@ def plot_losses(loss_history, config, save_dir='KD_Loss'):
         fpath = os.path.join(sub_dir, f"{fname}.png")
         plt.savefig(fpath, dpi=150, bbox_inches='tight')
         plt.close()
+        total_saved += 1
 
-    print(f"  Loss 그래프 저장 ({len(plots)}개): {sub_dir}/")
+    # 듀얼 라인 플롯 (progressive + uniform)
+    for fname, title, prog_data, uni_data in dual_plots:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(range(len(prog_data)), prog_data, linewidth=0.8, color='#1f77b4',
+                label='Progressive (optimizer 사용)', alpha=0.8)
+        if uni_data:
+            ax.plot(range(len(uni_data)), uni_data, linewidth=0.8, color='#ff7f0e',
+                    label='Uniform (고정 균등 평균)', alpha=0.8)
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Loss')
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        fpath = os.path.join(sub_dir, f"{fname}.png")
+        plt.savefig(fpath, dpi=150, bbox_inches='tight')
+        plt.close()
+        total_saved += 1
+
+    print(f"  Loss 그래프 저장 ({total_saved}개): {sub_dir}/")
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -717,7 +757,7 @@ if __name__ == "__main__":
         total_train_steps=total_train_steps,
         loss_history=loss_history,
         optimizer_type=args.optimizer,
-        muon_lr=learning_rate * 4,   # Muon은 일반적으로 AdamW보다 높은 LR 사용
+        muon_lr=learning_rate * 2,   # Muon은 AdamW보다 높은 LR 사용 (×4에서 안정성 위해 ×2로 조정)
         adamw_lr=learning_rate,
         model=model,
         args=training_args,
@@ -820,7 +860,7 @@ if __name__ == "__main__":
             total_train_steps=steps_per_epoch * total_epochs_trained,
             loss_history=loss_history,
             optimizer_type=args.optimizer,
-            muon_lr=learning_rate * 4,
+            muon_lr=learning_rate * 2,
             adamw_lr=learning_rate,
             model=model,
             args=training_args,
