@@ -189,12 +189,18 @@ class KDTrainer(Trainer):
 
         학습 초반에는 낮은 레이어에 집중, 후반에는 균등 분배.
         softmax 출력 < 0.01 인 레이어는 연산 스킵 (0 강제).
+
+        Adaptive sharpness: 초반 10 (집중) → 후반 2 (균등)
+          고정 sharpness=10은 30 레이어에서 항상 ~10개만 활성화되어
+          progressive 효과가 없음. sharpness를 줄여야 전체 레이어로 확산됨.
         """
         progress = min(self._current_step / max(self.total_train_steps, 1), 1.0)
+        # Adaptive sharpness: 10 (focused) → 2 (spread)
+        sharpness = 10.0 - 8.0 * progress
         logits = []
         for i in range(num_layers):
             layer_ratio = i / max(num_layers - 1, 1)
-            logits.append(10.0 * (progress - layer_ratio))
+            logits.append(sharpness * (progress - layer_ratio))
         weights = F.softmax(torch.tensor(logits), dim=0).tolist()
         # threshold 클램핑: 너무 작은 가중치 → 0 강제
         weights = [0.0 if w < 0.01 else w for w in weights]
