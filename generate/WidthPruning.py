@@ -418,7 +418,13 @@ if __name__ == "__main__":
                         help="목표 FFN intermediate 차원 (예: 3072, 3584). 128의 배수로 자동 정렬됨.")
     parser.add_argument("--dataset", "-d", type=str, default=None,
                         help="로컬 캘리브레이션 데이터셋 경로 (prepare_dataset.py의 wp_calib)")
+    parser.add_argument("--prune-attn", action="store_true",
+                        help="어텐션 헤드 프루닝 활성화 (기본: 비활성화)")
     args = parser.parse_args()
+
+    # CLI --prune-attn으로 하이퍼파라미터 오버라이드
+    if args.prune_attn:
+        PRUNE_ATTN_HEADS = True
 
     # 모델 경로 해석
     MODEL_ID = args.model

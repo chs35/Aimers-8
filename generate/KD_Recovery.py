@@ -59,6 +59,14 @@ from transformers import (
 )
 
 
+def _import_muon():
+    """Muon optimizer import (muon/muon-clip 모드에서만)"""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from muon_optimizer import create_hybrid_optimizer
+    return create_hybrid_optimizer
+
+
 def _import_peft():
     """LoRA 모드에서만 peft를 import"""
     try:
@@ -135,7 +143,9 @@ class KDTrainer(Trainer):
     def __init__(self, teacher_model, temperature, alpha_task, alpha_logit, alpha_hidden,
                  alpha_attn=0.0, alpha_embed=0.0,
                  use_cosine_hidden=True, use_akl=True, use_dynamic_alpha=True,
-                 total_train_steps=None, loss_history=None, **kwargs):
+                 total_train_steps=None, loss_history=None,
+                 optimizer_type="adamw", muon_lr=0.02, adamw_lr=3e-4,
+                 **kwargs):
         super().__init__(**kwargs)
         self.teacher = teacher_model
         self.temperature = temperature
@@ -152,6 +162,44 @@ class KDTrainer(Trainer):
         self.loss_history = loss_history if loss_history is not None else {
             'total': [], 'kd_logit': [], 'hidden': [], 'task': [],
         }
+        self._optimizer_type = optimizer_type
+        self._muon_lr = muon_lr
+        self._adamw_lr = adamw_lr
+
+    def create_optimizer(self):
+        """Optimizer 분기: muon/muon-clip → HybridMuonAdamW, adamw → HF 기본 AdamW"""
+        if self._optimizer_type in ("muon", "muon-clip"):
+            create_hybrid_optimizer = _import_muon()
+            head_dim = self.model.config.hidden_size // self.model.config.num_attention_heads
+            self.optimizer = create_hybrid_optimizer(
+                self.model,
+                optimizer_type=self._optimizer_type,
+                muon_lr=self._muon_lr,
+                adamw_lr=self._adamw_lr,
+                weight_decay=self.args.weight_decay,
+                head_dim=head_dim,
+            )
+            return self.optimizer
+        else:
+            # adamw: HF Trainer 기본 AdamW
+            return super().create_optimizer()
+
+    def _get_layer_weights(self, num_layers):
+        """Progressive layer-wise KD: softmax 기반 레이어별 가중치 스케줄링.
+
+        학습 초반에는 낮은 레이어에 집중, 후반에는 균등 분배.
+        softmax 출력 < 0.01 인 레이어는 연산 스킵 (0 강제).
+        """
+        progress = min(self._current_step / max(self.total_train_steps, 1), 1.0)
+        logits = []
+        for i in range(num_layers):
+            layer_ratio = i / max(num_layers - 1, 1)
+            logits.append(10.0 * (progress - layer_ratio))
+        weights = F.softmax(torch.tensor(logits), dim=0).tolist()
+        # threshold 클램핑: 너무 작은 가중치 → 0 강제
+        weights = [0.0 if w < 0.01 else w for w in weights]
+        total = sum(weights)
+        return [w / total for w in weights] if total > 0 else [1.0 / num_layers] * num_layers
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         self._current_step += 1
@@ -200,7 +248,7 @@ class KDTrainer(Trainer):
                 reduction="batchmean",
             ) * (T ** 2)
 
-        # ── 2) Hidden State KD ──
+        # ── 2) Hidden State KD (Progressive Layer-wise) ──
         student_hidden = student_outputs.hidden_states[1:]
         teacher_hidden = teacher_outputs.hidden_states[1:]
 
@@ -211,16 +259,18 @@ class KDTrainer(Trainer):
             indices = [round(i * (n_t - 1) / (n_s - 1)) for i in range(n_s)]
             teacher_hidden = [teacher_hidden[i] for i in indices]
 
-        if self.use_cosine_hidden:
-            hidden_loss = sum(
-                1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
-                for s, t in zip(student_hidden, teacher_hidden)
-            ) / len(student_hidden)
-        else:
-            hidden_loss = sum(
-                F.mse_loss(s.float(), t.float())
-                for s, t in zip(student_hidden, teacher_hidden)
-            ) / len(student_hidden)
+        # Progressive layer-wise weights (softmax scheduling)
+        layer_weights = self._get_layer_weights(len(student_hidden))
+
+        hidden_loss = torch.tensor(0.0, device=student_logits.device)
+        for w, s, t in zip(layer_weights, student_hidden, teacher_hidden):
+            if w > 0:
+                if self.use_cosine_hidden:
+                    hidden_loss = hidden_loss + w * (
+                        1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
+                    )
+                else:
+                    hidden_loss = hidden_loss + w * F.mse_loss(s.float(), t.float())
 
         # ── 3) Attention Map Transfer ──
         attn_loss = torch.tensor(0.0, device=student_logits.device)
@@ -377,7 +427,19 @@ if __name__ == "__main__":
                         help="출력 경로 (기본값: models/<student모델명>-KD)")
     parser.add_argument("--dataset", "-d", type=str, default=None,
                         help="로컬 학습 데이터셋 경로 (prepare_dataset.py의 kd_train)")
+    parser.add_argument("--train-attn", action="store_true",
+                        help="어텐션 프로젝션(q,k,v,o_proj)도 학습 대상에 포함")
+    parser.add_argument("--optimizer", type=str, default="muon",
+                        choices=["muon", "muon-clip", "adamw"],
+                        help="Optimizer 선택 (기본: muon)")
     args = parser.parse_args()
+
+    # --train-attn 시 DIRECT_TRAIN_MODULES 확장
+    if args.train_attn:
+        DIRECT_TRAIN_MODULES = [
+            "gate_proj", "down_proj",
+            "q_proj", "k_proj", "v_proj", "o_proj",
+        ]
 
     # Student 경로 해석
     MODEL_ID = args.model
@@ -575,6 +637,9 @@ if __name__ == "__main__":
         use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
         total_train_steps=total_train_steps,
         loss_history=loss_history,
+        optimizer_type=args.optimizer,
+        muon_lr=learning_rate * 4,   # Muon은 일반적으로 AdamW보다 높은 LR 사용
+        adamw_lr=learning_rate,
         model=model,
         args=training_args,
         train_dataset=train_ds,
@@ -593,6 +658,8 @@ if __name__ == "__main__":
         kd_features.append(f"AttnTransfer(α={KD_ALPHA_ATTN})")
     if KD_ALPHA_EMBED > 0:
         kd_features.append(f"EmbedMatch(α={KD_ALPHA_EMBED})")
+    kd_features.append(f"Optimizer={args.optimizer}")
+    kd_features.append("ProgressiveKD")
     features_str = ", ".join(kd_features) if kd_features else "none"
 
     print(f"  [{mode_str}] T={KD_TEMPERATURE}, α_task={KD_ALPHA_TASK}, "
@@ -673,6 +740,9 @@ if __name__ == "__main__":
             use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
             total_train_steps=steps_per_epoch * total_epochs_trained,
             loss_history=loss_history,
+            optimizer_type=args.optimizer,
+            muon_lr=learning_rate * 4,
+            adamw_lr=learning_rate,
             model=model,
             args=training_args,
             train_dataset=train_ds,
@@ -730,6 +800,9 @@ if __name__ == "__main__":
         "use_lora": USE_LORA,
         "lora_rank": LORA_RANK if USE_LORA else None,
         "direct_train_modules": DIRECT_TRAIN_MODULES if not USE_LORA else None,
+        "optimizer": args.optimizer,
+        "train_attn": args.train_attn,
+        "progressive_kd": True,
         "learning_rate": learning_rate,
         "epochs": total_epochs_trained,
         "train_samples": len(train_ds),
