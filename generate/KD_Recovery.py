@@ -166,6 +166,15 @@ class KDTrainer(Trainer):
         self._muon_lr = muon_lr
         self._adamw_lr = adamw_lr
 
+        # 기본 콘솔 출력 콜백 제거 -> 커스텀 in-place 디스플레이 사용
+        try:
+            from transformers.trainer_callback import ProgressCallback, PrinterCallback
+            self.remove_callback(ProgressCallback)
+            self.remove_callback(PrinterCallback)
+        except Exception:
+            pass
+        self._prev_status_lines = 0
+
     def create_optimizer(self):
         """Optimizer 분기: muon/muon-clip → HybridMuonAdamW, adamw → HF 기본 AdamW"""
         if self._optimizer_type in ("muon", "muon-clip"):
@@ -308,10 +317,12 @@ class KDTrainer(Trainer):
 
         # ── 5) Combined loss ──
         if self.use_dynamic_alpha and self.alpha_hidden > 0:
-            alpha_dynamic = kd_logit_loss.detach() / (hidden_loss.detach() + 1e-8)
+            # alpha_hidden/alpha_logit 비율을 반영한 dynamic scaling
+            # 예: alpha_logit=0.7, alpha_hidden=0.3 → hidden 기여 ≈ (0.3/0.7) × logit 기여 → 실제 7:3
+            alpha_dynamic = (self.alpha_hidden / (self.alpha_logit + 1e-8)) * kd_logit_loss.detach() / (hidden_loss.detach() + 1e-8)
             total_loss = (
                 self.alpha_task * task_loss
-                + kd_logit_loss
+                + self.alpha_logit * kd_logit_loss
                 + alpha_dynamic * hidden_loss
                 + self.alpha_attn * attn_loss
                 + self.alpha_embed * embed_loss
@@ -354,7 +365,69 @@ class KDTrainer(Trainer):
     def log(self, logs, *args, **kwargs):
         if hasattr(self, "_kd_metrics"):
             logs.update(self._kd_metrics)
+        # super().log()로 내부 상태(log_history) 업데이트 (콘솔 콜백은 이미 제거됨)
         super().log(logs, *args, **kwargs)
+        # 커스텀 in-place 디스플레이
+        if 'loss' in logs:
+            self._print_status(logs)
+
+    def _print_status(self, logs):
+        """ANSI escape로 이전 출력을 덮어쓰는 compact 디스플레이.
+
+        Line 1: 주요 메트릭
+        Line 2: 레이어 가중치 바 (ASCII)
+        Line 3+: 레이어별 가중치 수치
+        """
+        import sys
+
+        num_layers = getattr(self.model.config, 'num_hidden_layers', 30)
+        layer_weights = self._get_layer_weights(num_layers)
+        active = sum(1 for w in layer_weights if w > 0)
+        progress = min(self._current_step / max(self.total_train_steps, 1), 1.0)
+        sharpness = 10.0 - 8.0 * progress
+
+        step = self.state.global_step
+        total = (self.state.max_steps
+                 if self.state.max_steps and self.state.max_steps > 0
+                 else self.total_train_steps)
+        pct = step / max(total, 1) * 100
+
+        lines = []
+
+        # Line 1: 주요 메트릭
+        m = (f"  [{step}/{total} {pct:.0f}%] ep={logs.get('epoch',0):.2f} | "
+             f"loss={logs.get('loss',0):.1f} kd={logs.get('kd_logit_loss',0):.1f} "
+             f"hid={logs.get('hidden_loss',0):.4f} | "
+             f"grad={logs.get('grad_norm',0):.0f} lr={logs.get('learning_rate',0):.2e}")
+        if 'dynamic_alpha' in logs:
+            m += f" a_dyn={logs['dynamic_alpha']:.0f}"
+        lines.append(m)
+
+        # Line 2: 레이어 바 (ASCII: # > 5%, + 2-5%, . < 2%, - = 0)
+        bar = "".join(
+            "#" if w >= 0.05 else "+" if w >= 0.02 else "." if w > 0 else "-"
+            for w in layer_weights
+        )
+        lines.append(f"  layers [{bar}] {active}/{num_layers} (sharp={sharpness:.1f})")
+
+        # Line 3+: 레이어별 가중치 수치 (15개씩)
+        per_row = 15
+        for start in range(0, num_layers, per_row):
+            end = min(start + per_row, num_layers)
+            vals = []
+            for i in range(start, end):
+                w = layer_weights[i]
+                vals.append(f"{w:.3f}"[1:] if w > 0 else " -- ")
+            lines.append(f"   L{start:<2d}: {' '.join(vals)}")
+
+        # ANSI escape: 이전 출력 덮어쓰기
+        n = self._prev_status_lines
+        if n > 0:
+            sys.stdout.write(f"\033[{n}A")
+        for line in lines:
+            sys.stdout.write(f"\033[2K{line}\n")
+        sys.stdout.flush()
+        self._prev_status_lines = len(lines)
 
 
 def plot_losses(loss_history, config, save_dir='KD_Loss'):
