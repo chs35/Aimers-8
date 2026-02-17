@@ -548,7 +548,7 @@ if __name__ == "__main__":
                         help="로컬 학습 데이터셋 경로 (prepare_dataset.py의 kd_train)")
     parser.add_argument("--train-attn", action="store_true",
                         help="어텐션 프로젝션(q,k,v,o_proj)도 학습 대상에 포함")
-    parser.add_argument("--optimizer", type=str, default="muon",
+    parser.add_argument("--optimizer", type=str, default="adamw",
                         choices=["muon", "muon-clip", "adamw"],
                         help="Optimizer 선택 (기본: muon)")
     args = parser.parse_args()
