@@ -25,6 +25,10 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # 헤드리스 서버에서 디스플레이 없이 저장
+import matplotlib.pyplot as plt
+
 import torch
 from datasets import load_dataset, load_from_disk
 from transformers import (
@@ -91,6 +95,33 @@ quant_stage:
                         symmetric: true
                     targets: ["Linear"]
 """
+
+
+def plot_loss(log_history, model_name, quant_type, timestamp):
+    """학습 Loss 곡선을 QAT_Loss 폴더에 PNG로 저장"""
+    entries = [e for e in log_history if "loss" in e]
+    if not entries:
+        print("  [경고] 학습 로그가 없어 Loss 그래프를 건너뜁니다.")
+        return
+
+    steps  = [e["step"] for e in entries]
+    losses = [e["loss"] for e in entries]
+
+    os.makedirs("QAT_Loss", exist_ok=True)
+    filename  = f"{model_name}-{quant_type}_{timestamp}.png"
+    save_path = os.path.join("QAT_Loss", filename)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(steps, losses, color="darkorange", linewidth=1.2, label="train loss")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Loss")
+    ax.set_title(f"{model_name}  QAT-{quant_type}  Training Loss")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+    print(f"  Loss 그래프 저장: {save_path}")
 
 
 class QATTrainer(Trainer):
@@ -167,6 +198,7 @@ def main():
     model_name  = os.path.basename(args.model.rstrip("/\\"))
     output_path = args.output or os.path.join("models", f"{model_name}-QAT-INT4")
     trainer_tmp = "/tmp/qat_int4_trainer"
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     print("=" * 60)
     print("INT4 QAT (W4A16) — Phase 1: group fake-quant / Phase 2: GPTQ")
@@ -248,6 +280,7 @@ def main():
         data_collator=data_collator,
     )
     trainer.train()
+    plot_loss(trainer.state.log_history, model_name, "INT4", run_timestamp)
 
     session.finalize()
     model.config.use_cache = True
