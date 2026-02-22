@@ -51,7 +51,7 @@ QAT_BATCH_SIZE    = 4
 QAT_GRAD_ACCUM    = 8
 NUM_TRAIN_SAMPLES = 50000
 MAX_SEQ_LEN       = 1024
-PTQ_CALIB_SAMPLES = 512
+PTQ_CALIB_SAMPLES = -1   # -1 = 전체 학습 데이터 사용
 
 DATASET_ID    = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
@@ -191,7 +191,10 @@ def main():
     parser.add_argument("--grad-accum", type=int, default=QAT_GRAD_ACCUM)
     parser.add_argument("--samples", type=int, default=NUM_TRAIN_SAMPLES)
     parser.add_argument("--max-seq-len", type=int, default=MAX_SEQ_LEN)
-    parser.add_argument("--calib-samples", type=int, default=PTQ_CALIB_SAMPLES)
+    parser.add_argument(
+        "--calib-samples", type=int, default=PTQ_CALIB_SAMPLES,
+        help="캘리브레이션 샘플 수 (-1이면 전체 학습 데이터 사용, 기본: -1)"
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -295,8 +298,14 @@ def main():
 
     reset_session()
 
-    calib_size = min(args.calib_samples, len(train_ds))
-    calib_ds   = train_ds.select(range(calib_size))
+    if args.calib_samples < 0:
+        # -1: 전체 학습 데이터 사용 (셔플 후)
+        calib_ds = train_ds.shuffle(seed=args.seed)
+        calib_size = len(calib_ds)
+    else:
+        # 양수: 셔플 후 지정 수만큼 선택 (기존의 range() 편향 버그 수정)
+        calib_size = min(args.calib_samples, len(train_ds))
+        calib_ds   = train_ds.shuffle(seed=args.seed).select(range(calib_size))
     print(f"  캘리브레이션 샘플: {calib_size}개\n")
 
     os.makedirs(output_path, exist_ok=True)

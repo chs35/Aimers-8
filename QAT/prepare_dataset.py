@@ -28,7 +28,6 @@ DATASET_CONFIGS = [
     {"id": "openai/gsm8k",                           "name": "gsm8k",                 "split": "train", "config": "main"},
     {"id": "MegaScience/TextbookReasoning",           "name": "TextbookReasoning",     "split": "train"},
     # ── 영어 SFT ──
-    {"id": "Open-Orca/SlimOrca",                     "name": "SlimOrca",              "split": "train"},
     {"id": "TIGER-Lab/MMLU-Pro",                     "name": "MMLU-Pro",              "split": "test"},
     # ── 한국어 수학 / 추론 ──
     {"id": "kuotient/orca-math-word-problems-193k-korean", "name": "orca-math-193k-korean", "split": "train"},
