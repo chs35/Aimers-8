@@ -30,6 +30,7 @@ matplotlib.use("Agg")  # 헤드리스 서버에서 디스플레이 없이 저장
 import matplotlib.pyplot as plt
 
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset, load_from_disk
 from transformers import (
     AutoTokenizer,
@@ -39,6 +40,18 @@ from transformers import (
     TrainingArguments,
 )
 from llmcompressor import active_session, callbacks as LC, oneshot, reset_session
+
+
+def _import_peft():
+    """KD LoRA 모드에서만 peft를 import (선택적 의존성)"""
+    try:
+        from peft import LoraConfig, get_peft_model, TaskType
+    except ImportError:
+        import subprocess
+        print("peft 패키지가 없습니다. 설치 중...")
+        subprocess.check_call(["pip", "install", "peft", "-q"])
+        from peft import LoraConfig, get_peft_model, TaskType
+    return LoraConfig, get_peft_model, TaskType
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -52,6 +65,17 @@ QAT_GRAD_ACCUM    = 8
 NUM_TRAIN_SAMPLES = 50000
 MAX_SEQ_LEN       = 1024
 PTQ_CALIB_SAMPLES = -1   # -1 = 전체 학습 데이터 사용
+
+KD_ALPHA       = 0.5   # KD loss 비중 (0=CE만, 1=KD만)
+KD_TEMPERATURE = 2.0   # logit softening 온도
+
+KD_LORA_RANK    = 16   # KD LoRA rank (0이면 전체 파라미터 학습)
+KD_LORA_ALPHA   = 32   # LoRA alpha (통상 rank × 2)
+KD_LORA_DROPOUT = 0.05
+KD_LORA_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
 
 DATASET_ID    = "LGAI-EXAONE/MANTA-1M"
 DATASET_SPLIT = "train"
@@ -134,6 +158,33 @@ class QATTrainer(Trainer):
         return loss
 
 
+class KDQATTrainer(QATTrainer):
+    """QATTrainer + KL divergence Knowledge Distillation"""
+
+    def __init__(self, teacher_model, kd_alpha=0.5, kd_temp=2.0, **kwargs):
+        super().__init__(**kwargs)
+        self.teacher   = teacher_model
+        self.kd_alpha  = kd_alpha
+        self.kd_temp   = kd_temp
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        outputs  = model(**inputs)
+        ce_loss  = outputs.loss
+
+        with torch.no_grad():
+            teacher_out = self.teacher(**inputs)
+
+        T = self.kd_temp
+        kd_loss = F.kl_div(
+            F.log_softmax(outputs.logits / T, dim=-1),
+            F.softmax(teacher_out.logits / T, dim=-1),
+            reduction="batchmean",
+        ) * (T ** 2)
+
+        loss = (1 - self.kd_alpha) * ce_loss + self.kd_alpha * kd_loss
+        return (loss, outputs) if return_outputs else loss
+
+
 def load_train_dataset(tokenizer, dataset_path, num_samples, max_seq_len, seed):
     if dataset_path:
         print(f"  로컬 데이터셋 사용: {dataset_path}")
@@ -196,6 +247,14 @@ def main():
         help="캘리브레이션 샘플 수 (-1이면 전체 학습 데이터 사용, 기본: -1)"
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--kd-alpha", type=float, default=KD_ALPHA,
+                        help="KD loss 비중 (0.0~1.0, 기본: 0.5)")
+    parser.add_argument("--kd-temp", type=float, default=KD_TEMPERATURE,
+                        help="KD softening 온도 (기본: 2.0)")
+    parser.add_argument("--no-kd", action="store_true",
+                        help="KD 비활성화 (CE loss만 사용)")
+    parser.add_argument("--kd-lora-rank", type=int, default=KD_LORA_RANK,
+                        help="KD LoRA rank (0이면 LoRA 없이 전체 파라미터 학습, 기본: 16)")
     args = parser.parse_args()
 
     model_name  = os.path.basename(args.model.rstrip("/\\"))
@@ -243,6 +302,41 @@ def main():
     print("  activation: 미적용 (W4A16, BF16 유지)")
     print("=" * 60)
 
+    # Teacher 로드 (session.initialize 전 원본 BF16 상태)
+    if not args.no_kd:
+        print("  Teacher 모델 로드 (원본 BF16, 동결)")
+        teacher_model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad_(False)
+        print(f"  KD alpha={args.kd_alpha}, temperature={args.kd_temp}\n")
+    else:
+        teacher_model = None
+
+    # LoRA 적용 (KD 활성 + rank > 0: fake-quant 삽입 전에 어댑터 부착)
+    kd_lora_enabled = teacher_model is not None and args.kd_lora_rank > 0
+    if kd_lora_enabled:
+        LoraConfig, get_peft_model, TaskType = _import_peft()
+        print(f"  KD LoRA 적용 (rank={args.kd_lora_rank}, alpha={args.kd_lora_rank * 2})")
+        lora_cfg = LoraConfig(
+            r=args.kd_lora_rank,
+            lora_alpha=args.kd_lora_rank * 2,
+            lora_dropout=KD_LORA_DROPOUT,
+            target_modules=KD_LORA_MODULES,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+        model = get_peft_model(model, lora_cfg)
+        model.print_trainable_parameters()
+        # gradient_checkpointing + LoRA 호환성
+        model.enable_input_require_grads()
+        print()
+
     session = active_session()
     session.initialize(recipe=QAT_RECIPE, model=model)
     print("  fake-quant 노드 삽입 완료\n")
@@ -276,18 +370,38 @@ def main():
         seed=args.seed,
     )
 
-    trainer = QATTrainer(
+    TrainerClass = KDQATTrainer if teacher_model is not None else QATTrainer
+    trainer_kwargs = dict(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         data_collator=data_collator,
     )
+    if teacher_model is not None:
+        trainer_kwargs.update(
+            teacher_model=teacher_model,
+            kd_alpha=args.kd_alpha,
+            kd_temp=args.kd_temp,
+        )
+    trainer = TrainerClass(**trainer_kwargs)
     trainer.train()
     plot_loss(trainer.state.log_history, model_name, "INT4", run_timestamp)
 
     session.finalize()
+
+    # LoRA 병합 → QAT-최적화된 가중치에 LoRA 흡수
+    if kd_lora_enabled:
+        print("  LoRA 가중치 병합 (merge_and_unload)...")
+        model = model.merge_and_unload()
+
     model.config.use_cache = True
     shutil.rmtree(trainer_tmp, ignore_errors=True)
+
+    # Teacher 삭제 → Phase 2 PTQ 전 VRAM 확보
+    if teacher_model is not None:
+        del teacher_model
+        torch.cuda.empty_cache()
+
     print("\n  Phase 1 완료: QAT-최적화된 BF16 가중치\n")
 
     # ── Step 4: Phase 2 — GPTQ 캘리브레이션 + 압축 저장 ─────────
@@ -338,6 +452,11 @@ def main():
             "grad_accum": args.grad_accum,
             "max_seq_len": args.max_seq_len,
             "num_samples": len(train_ds),
+            "kd": not args.no_kd,
+            "kd_alpha": args.kd_alpha if not args.no_kd else None,
+            "kd_temp": args.kd_temp if not args.no_kd else None,
+            "kd_lora": kd_lora_enabled,
+            "kd_lora_rank": args.kd_lora_rank if kd_lora_enabled else None,
         },
         "phase2": {
             "recipe": "GPTQ",
