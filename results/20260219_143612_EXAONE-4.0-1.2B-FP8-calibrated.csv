@@ -1,0 +1,4 @@
+idx,id,task,question,reference,prediction,short_ans,judge_long,judge_short,is_correct,output_tokens
+0,singledocqa_000,singledocQA,알파시르는 어느 주의 주도인가요?,북다르푸르 주,답변은 다음과 같습니다: 알파시르는 수단 북다르푸르 주의 주도입니다.,알파시르는 수단 북다르푸르 주의 주도입니다.,,,,20
+1,singledocqa_001,singledocQA,한국 신발 산업에서 1985년 이후 수출이 증가한 원인은 무엇인가요?,"아시안게임과 올림픽 특수에 힘입어 이미지 제고, 연구개발 및 소재개발 노력 때문입니다.",답변은 다음과 같습니다: 신발산업 구조 고도화,신발산업 구조 고도화,,,,13
+2,singledocqa_002,singledocQA,게르하르트 슈퇴크가 1936년 베를린 올림픽에서 창던지기에서 이룬 성과는 무엇인가요?,금메달을 획득하였습니다.,답변은 다음과 같습니다: 승리,승리,,,,9

@@ -1,0 +1,55 @@
+Detected accelerate version: 1.10.1
+Detected datasets version: 4.4.1
+Detected jinja2 version: 3.1.6
+Detected nltk version: 3.9.2
+Detected openai version: 2.18.0
+Detected gptqmodel version: 5.7.0+cu128torch2.9
+Detected pandas version: 2.3.3
+Detected peft version: 0.18.1
+Detected psutil version: 7.2.2
+Detected pygments version: 2.19.2
+Detected safetensors version: 0.7.0
+Detected sentencepiece version: 0.2.1
+Detected gguf version: 0.17.1
+Detected tokenizers version: 0.22.1
+Detected torchaudio version: 2.9.0+cu128
+Detected torchao version: 0.16.0
+Detected torchvision version: 0.24.0+cu128
+Detected tiktoken version: 0.12.0
+Detected rich version: 14.3.2
+Detected kernels version: 0.12.1
+Detected matplotlib version: 3.10.8
+Detected mistral_common version: 1.9.0
+Detected triton version: 3.5.0
+Detected torch version: 2.9.0+cu128
+Successfully imported pydantic version 2.12.5
+Successfully imported pydantic version 0.128.6
+Successfully imported pydantic version 0.40.0
+Detected PIL version 12.0.0
+2026-02-19 23:34:27,430 | DEBUG | datasets | PyTorch version 2.9.0+cu128 available.
+2026-02-19 23:34:27,655 | DEBUG | src.runtime.logging_capture | CLI log file: /workspace/logs/20260219_143424_EXAONE-4.0-1.2B-calibrated.log
+2026-02-19 23:34:27,655 | DEBUG | src.kolongrag.main | Benchmark started. model_dir_name=EXAONE-4.0-1.2B-calibrated
+2026-02-19 23:34:27,657 | ERROR | src.kolongrag.main | Benchmark failed
+Traceback (most recent call last):
+  File "/workspace/src/kolongrag/main.py", line 23, in main
+    payload = run(args)
+              ^^^^^^^^^
+  File "/workspace/src/kolongrag/app/runner.py", line 80, in run
+    model_path = _resolve_model_path(model_dir_name)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/src/kolongrag/app/runner.py", line 70, in _resolve_model_path
+    raise FileNotFoundError(f"모델 디렉토리가 없습니다: {model_path}")
+FileNotFoundError: 모델 디렉토리가 없습니다: /workspace/models/EXAONE-4.0-1.2B-calibrated
+Traceback (most recent call last):
+  File "/workspace/script.py", line 5, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/workspace/src/kolongrag/main.py", line 23, in main
+    payload = run(args)
+              ^^^^^^^^^
+  File "/workspace/src/kolongrag/app/runner.py", line 80, in run
+    model_path = _resolve_model_path(model_dir_name)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/src/kolongrag/app/runner.py", line 70, in _resolve_model_path
+    raise FileNotFoundError(f"모델 디렉토리가 없습니다: {model_path}")
+FileNotFoundError: 모델 디렉토리가 없습니다: /workspace/models/EXAONE-4.0-1.2B-calibrated

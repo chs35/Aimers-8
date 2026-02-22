@@ -2,12 +2,11 @@
 FP8 (E4M3) 양자화 스크립트 - L4 GPU용
 llmcompressor + compressed-tensors 사용 (대회 환경 호환)
 Static Scaling으로 Activation 스케일링 팩터 고정
-Manta 1M 데이터셋으로 캘리브레이션
 """
 import argparse
 from pathlib import Path
 
-from datasets import load_dataset
+from datasets import load_from_disk
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llmcompressor import oneshot
 
@@ -35,76 +34,42 @@ quant_stage:
                     targets: ["Linear"]
 """
 
-# FP8 + KV Cache FP8 레시피
-FP8_KV_CACHE_RECIPE = """
-quant_stage:
-    quant_modifiers:
-        QuantizationModifier:
-            ignore: ["lm_head"]
-            config_groups:
-                group_0:
-                    weights:
-                        num_bits: 8
-                        type: float
-                        strategy: tensor
-                        dynamic: false
-                        symmetric: true
-                    input_activations:
-                        num_bits: 8
-                        type: float
-                        strategy: tensor
-                        dynamic: false
-                        symmetric: true
-                    targets: ["Linear"]
-            kv_cache_scheme:
-                num_bits: 8
-                type: float
-                strategy: tensor
-                dynamic: false
-                symmetric: true
-"""
 
+def prepare_calibration_dataset(tokenizer, data_dir="data/calibration", max_length=16384):
+    """저장된 캘리브레이션 데이터 로드 → chat template 적용 → 토크나이즈"""
+    ds = load_from_disk(str(Path(data_dir) / "dataset"))
 
-def prepare_calibration_dataset(tokenizer, num_samples=512, max_length=2048):
-    """Manta 1M 데이터셋에서 캘리브레이션 데이터 준비"""
-    # Manta 1M 데이터셋 로드 (EXAONE-3.5-32B-Instruct로 생성된 합성 데이터)
-    # https://huggingface.co/datasets/LGAI-EXAONE/MANTA-1M
-    ds = load_dataset(
-        "LGAI-EXAONE/MANTA-1M",
-        split=f"train[:{num_samples}]"
-    )
-    ds = ds.shuffle(seed=42)
-
-    def process_and_tokenize(example):
-        # Manta 데이터셋 구조에 맞게 텍스트 추출
-        text = example.get("text") or example.get("content") or str(example)
+    def apply_chat_template_and_tokenize(example):
+        text = tokenizer.apply_chat_template(
+            example["messages"],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
         return tokenizer(
             text,
             padding=False,
             max_length=max_length,
             truncation=True,
-            add_special_tokens=False
+            add_special_tokens=False,
         )
 
-    ds = ds.map(process_and_tokenize, remove_columns=ds.column_names)
-    print(f"Prepared {len(ds)} calibration samples from MANTA-1M dataset")
+    ds = ds.map(apply_chat_template_and_tokenize, remove_columns=ds.column_names)
+    print(f"Loaded {len(ds)} calibration samples from {data_dir}")
     return ds
 
 
 def quantize_fp8(
     model_path: str,
     output_path: str,
-    num_samples: int = 512,
+    calibration_data: str = "data/calibration",
     max_length: int = 2048,
-    kv_cache_fp8: bool = False,
 ):
     """FP8 양자화 실행 (llmcompressor 사용)"""
 
     print(f"Model: {model_path}")
     print(f"Output: {output_path}")
-    print(f"Calibration samples: {num_samples}")
+    print(f"Calibration data: {calibration_data}")
     print(f"Max length: {max_length}")
-    print(f"KV Cache FP8: {kv_cache_fp8}")
     print("=" * 60)
 
     # 토크나이저 로드
@@ -120,27 +85,24 @@ def quantize_fp8(
         trust_remote_code=True,
     )
 
-    # 캘리브레이션 데이터 준비
-    print("Preparing calibration data from MANTA-1M...")
+    # 캘리브레이션 데이터 로드
+    print("Loading calibration data...")
     ds = prepare_calibration_dataset(
         tokenizer,
-        num_samples=num_samples,
-        max_length=max_length
+        data_dir=calibration_data,
+        max_length=max_length,
     )
-
-    # 레시피 선택
-    recipe = FP8_KV_CACHE_RECIPE if kv_cache_fp8 else FP8_RECIPE
 
     # 양자화 실행 (oneshot calibration)
     print("Running FP8 quantization with static calibration...")
     oneshot(
         model=model,
         dataset=ds,
-        recipe=recipe,
+        recipe=FP8_RECIPE,
         save_compressed=True,
         output_dir=output_path,
         max_seq_length=max_length,
-        num_calibration_samples=num_samples,
+        num_calibration_samples=len(ds),
     )
 
     # 토크나이저 저장
@@ -176,35 +138,28 @@ def main():
         help="Output path (default: {model}-FP8)"
     )
     parser.add_argument(
-        "--num-samples", "-n",
-        type=int,
-        default=512,
-        help="Number of calibration samples (default: 512)"
+        "--calibration-data", "-c",
+        type=str,
+        default="data/calibration",
+        help="Calibration dataset path (default: data/calibration)"
     )
     parser.add_argument(
         "--max-length", "-l",
         type=int,
         default=2048,
-        help="Max sequence length for calibration (default: 2048)"
+        help="Max sequence length for calibration (default: 16384)"
     )
-    parser.add_argument(
-        "--kv-cache-fp8",
-        action="store_true",
-        help="Enable FP8 KV cache quantization"
-    )
-
     args = parser.parse_args()
 
     # 출력 경로 기본값
     if args.output is None:
-        args.output = f"{args.model}-FP8"
+        args.output = f"{args.model}-FP8-calibrated"
 
     quantize_fp8(
         model_path=args.model,
         output_path=args.output,
-        num_samples=args.num_samples,
+        calibration_data=args.calibration_data,
         max_length=args.max_length,
-        kv_cache_fp8=args.kv_cache_fp8,
     )
 
 

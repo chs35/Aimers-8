@@ -1,0 +1,48 @@
+{
+  "run_name": "20260219_143612_EXAONE-4.0-1.2B-FP8-calibrated",
+  "model_dir_name": "EXAONE-4.0-1.2B-FP8-calibrated",
+  "model_path": "/workspace/models/EXAONE-4.0-1.2B-FP8-calibrated",
+  "dataset": "LGAI-EXAONE/Ko-LongRAG",
+  "split": "test",
+  "filters": {
+    "quick_n": 3,
+    "single_only": false,
+    "multi_only": false,
+    "skip_eval": true
+  },
+  "vllm_settings": {
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.85,
+    "batch_size": "auto",
+    "max_gen_toks": 16384,
+    "apply_chat_template": true
+  },
+  "sampling_params": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 16384
+  },
+  "judge": {
+    "mode": "gpt4o_judge",
+    "model": null,
+    "max_retries": null
+  },
+  "timing_runs_seconds": [
+    22.451011404999917
+  ],
+  "perf_model": null,
+  "infer_sec_model": 22.451011404999917,
+  "tok_model": 42,
+  "tpt_model": 0.5345478905952361,
+  "accuracy_single": null,
+  "accuracy_multi": null,
+  "accuracy_unanswerable": null,
+  "judge_errors": 0,
+  "sample_count": 3,
+  "artifacts": {
+    "result_csv": "results/20260219_143612_EXAONE-4.0-1.2B-FP8-calibrated.csv",
+    "submission_csv": "output/20260219_143612_EXAONE-4.0-1.2B-FP8-calibrated_submission.csv",
+    "canonical_submission_csv": "output/submission.csv"
+  },
+  "timestamp": "2026-02-19T14:36:12.364971+00:00"
+}
