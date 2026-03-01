@@ -59,6 +59,14 @@ from transformers import (
 )
 
 
+def _import_muon():
+    """Muon optimizer import (muon/muon-clip 모드에서만)"""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from muon_optimizer import create_hybrid_optimizer
+    return create_hybrid_optimizer
+
+
 def _import_peft():
     """LoRA 모드에서만 peft를 import"""
     try:
@@ -135,7 +143,9 @@ class KDTrainer(Trainer):
     def __init__(self, teacher_model, temperature, alpha_task, alpha_logit, alpha_hidden,
                  alpha_attn=0.0, alpha_embed=0.0,
                  use_cosine_hidden=True, use_akl=True, use_dynamic_alpha=True,
-                 total_train_steps=None, loss_history=None, **kwargs):
+                 total_train_steps=None, loss_history=None,
+                 optimizer_type="adamw", muon_lr=0.02, adamw_lr=3e-4,
+                 **kwargs):
         super().__init__(**kwargs)
         self.teacher = teacher_model
         self.temperature = temperature
@@ -151,7 +161,62 @@ class KDTrainer(Trainer):
         self._current_step = 0
         self.loss_history = loss_history if loss_history is not None else {
             'total': [], 'kd_logit': [], 'hidden': [], 'task': [],
+            'hidden_uniform': [],
         }
+        self._optimizer_type = optimizer_type
+        self._muon_lr = muon_lr
+        self._adamw_lr = adamw_lr
+
+        # 기본 콘솔 출력 콜백 제거 -> 커스텀 in-place 디스플레이 사용
+        try:
+            from transformers.trainer_callback import ProgressCallback, PrinterCallback
+            self.remove_callback(ProgressCallback)
+            self.remove_callback(PrinterCallback)
+        except Exception:
+            pass
+        self._prev_status_lines = 0
+
+    def create_optimizer(self):
+        """Optimizer 분기: muon/muon-clip → HybridMuonAdamW, adamw → HF 기본 AdamW"""
+        if self._optimizer_type in ("muon", "muon-clip"):
+            create_hybrid_optimizer = _import_muon()
+            head_dim = self.model.config.hidden_size // self.model.config.num_attention_heads
+            self.optimizer = create_hybrid_optimizer(
+                self.model,
+                optimizer_type=self._optimizer_type,
+                muon_lr=self._muon_lr,
+                adamw_lr=self._adamw_lr,
+                weight_decay=self.args.weight_decay,
+                head_dim=head_dim,
+            )
+            return self.optimizer
+        else:
+            # adamw: HF Trainer 기본 AdamW
+            return super().create_optimizer()
+
+    def _get_layer_weights(self, num_layers):
+        """Progressive layer-wise KD: softmax 기반 레이어별 가중치 스케줄링.
+
+        학습 초반에는 낮은 레이어에 집중, 후반에는 높은 레이어에 집중.
+        가우시안 형태로 progress 위치의 레이어에 peak를 두고 양쪽으로 감소.
+        softmax 출력 < 0.01 인 레이어는 연산 스킵 (0 강제).
+
+        Adaptive sharpness: 초반 10 (집중) → 후반 2 (넓게 분산)
+        """
+        progress = min(self._current_step / max(self.total_train_steps, 1), 1.0)
+        # Adaptive sharpness: 10 (focused) → 2 (spread)
+        sharpness = 10.0 - 8.0 * progress
+        logits = []
+        for i in range(num_layers):
+            layer_ratio = i / max(num_layers - 1, 1)
+            # 가우시안: progress 위치에 peak, 멀어질수록 감소
+            # progress=0 → 초반 레이어 집중, progress=1 → 후반 레이어 집중
+            logits.append(-sharpness * (layer_ratio - progress) ** 2)
+        weights = F.softmax(torch.tensor(logits), dim=0).tolist()
+        # threshold 클램핑: 너무 작은 가중치 → 0 강제
+        weights = [0.0 if w < 0.01 else w for w in weights]
+        total = sum(weights)
+        return [w / total for w in weights] if total > 0 else [1.0 / num_layers] * num_layers
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         self._current_step += 1
@@ -200,7 +265,7 @@ class KDTrainer(Trainer):
                 reduction="batchmean",
             ) * (T ** 2)
 
-        # ── 2) Hidden State KD ──
+        # ── 2) Hidden State KD (Progressive Layer-wise) ──
         student_hidden = student_outputs.hidden_states[1:]
         teacher_hidden = teacher_outputs.hidden_states[1:]
 
@@ -211,16 +276,31 @@ class KDTrainer(Trainer):
             indices = [round(i * (n_t - 1) / (n_s - 1)) for i in range(n_s)]
             teacher_hidden = [teacher_hidden[i] for i in indices]
 
-        if self.use_cosine_hidden:
-            hidden_loss = sum(
-                1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
-                for s, t in zip(student_hidden, teacher_hidden)
-            ) / len(student_hidden)
-        else:
-            hidden_loss = sum(
-                F.mse_loss(s.float(), t.float())
-                for s, t in zip(student_hidden, teacher_hidden)
-            ) / len(student_hidden)
+        # Progressive layer-wise weights (softmax scheduling)
+        layer_weights = self._get_layer_weights(len(student_hidden))
+
+        hidden_loss = torch.tensor(0.0, device=student_logits.device)
+        for w, s, t in zip(layer_weights, student_hidden, teacher_hidden):
+            if w > 0:
+                if self.use_cosine_hidden:
+                    hidden_loss = hidden_loss + w * (
+                        1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
+                    )
+                else:
+                    hidden_loss = hidden_loss + w * F.mse_loss(s.float(), t.float())
+
+        # Uniform hidden loss (고정 균등 평균 — progressive 영향 없는 순수 지표)
+        with torch.no_grad():
+            if self.use_cosine_hidden:
+                hidden_loss_uniform = sum(
+                    1.0 - F.cosine_similarity(s.float(), t.float(), dim=-1).mean()
+                    for s, t in zip(student_hidden, teacher_hidden)
+                ) / len(student_hidden)
+            else:
+                hidden_loss_uniform = sum(
+                    F.mse_loss(s.float(), t.float())
+                    for s, t in zip(student_hidden, teacher_hidden)
+                ) / len(student_hidden)
 
         # ── 3) Attention Map Transfer ──
         attn_loss = torch.tensor(0.0, device=student_logits.device)
@@ -252,10 +332,12 @@ class KDTrainer(Trainer):
 
         # ── 5) Combined loss ──
         if self.use_dynamic_alpha and self.alpha_hidden > 0:
-            alpha_dynamic = kd_logit_loss.detach() / (hidden_loss.detach() + 1e-8)
+            # alpha_hidden/alpha_logit 비율을 반영한 dynamic scaling
+            # 예: alpha_logit=0.7, alpha_hidden=0.3 → hidden 기여 ≈ (0.3/0.7) × logit 기여 → 실제 7:3
+            alpha_dynamic = (self.alpha_hidden / (self.alpha_logit + 1e-8)) * kd_logit_loss.detach() / (hidden_loss.detach() + 1e-8)
             total_loss = (
                 self.alpha_task * task_loss
-                + kd_logit_loss
+                + self.alpha_logit * kd_logit_loss
                 + alpha_dynamic * hidden_loss
                 + self.alpha_attn * attn_loss
                 + self.alpha_embed * embed_loss
@@ -274,6 +356,7 @@ class KDTrainer(Trainer):
             "task_loss": task_loss.detach().item(),
             "kd_logit_loss": kd_logit_loss.detach().item(),
             "hidden_loss": hidden_loss.detach().item(),
+            "hidden_loss_uniform": hidden_loss_uniform.item(),
         }
         if need_attn:
             self._kd_metrics["attn_loss"] = attn_loss.detach().item()
@@ -290,6 +373,7 @@ class KDTrainer(Trainer):
             self.loss_history['kd_logit'].append(kd_logit_loss.detach().item())
         if self.alpha_hidden > 0:
             self.loss_history['hidden'].append(hidden_loss.detach().item())
+            self.loss_history.setdefault('hidden_uniform', []).append(hidden_loss_uniform.item())
         if self.alpha_task > 0:
             self.loss_history['task'].append(task_loss.detach().item())
 
@@ -298,12 +382,75 @@ class KDTrainer(Trainer):
     def log(self, logs, *args, **kwargs):
         if hasattr(self, "_kd_metrics"):
             logs.update(self._kd_metrics)
+        # super().log()로 내부 상태(log_history) 업데이트 (콘솔 콜백은 이미 제거됨)
         super().log(logs, *args, **kwargs)
+        # 커스텀 in-place 디스플레이
+        if 'loss' in logs:
+            self._print_status(logs)
+
+    def _print_status(self, logs):
+        """ANSI escape로 이전 출력을 덮어쓰는 compact 디스플레이.
+
+        Line 1: 주요 메트릭
+        Line 2: 레이어 가중치 바 (ASCII)
+        Line 3+: 레이어별 가중치 수치
+        """
+        import sys
+
+        num_layers = getattr(self.model.config, 'num_hidden_layers', 30)
+        layer_weights = self._get_layer_weights(num_layers)
+        active = sum(1 for w in layer_weights if w > 0)
+        progress = min(self._current_step / max(self.total_train_steps, 1), 1.0)
+        sharpness = 10.0 - 8.0 * progress
+
+        step = self.state.global_step
+        total = (self.state.max_steps
+                 if self.state.max_steps and self.state.max_steps > 0
+                 else self.total_train_steps)
+        pct = step / max(total, 1) * 100
+
+        lines = []
+
+        # Line 1: 주요 메트릭
+        m = (f"  [{step}/{total} {pct:.0f}%] ep={logs.get('epoch',0):.2f} | "
+             f"loss={logs.get('loss',0):.1f} kd={logs.get('kd_logit_loss',0):.1f} "
+             f"hid={logs.get('hidden_loss',0):.4f} | "
+             f"grad={logs.get('grad_norm',0):.0f} lr={logs.get('learning_rate',0):.2e}")
+        if 'dynamic_alpha' in logs:
+            m += f" a_dyn={logs['dynamic_alpha']:.0f}"
+        lines.append(m)
+
+        # Line 2: 레이어 바 (ASCII: # > 5%, + 2-5%, . < 2%, - = 0)
+        bar = "".join(
+            "#" if w >= 0.05 else "+" if w >= 0.02 else "." if w > 0 else "-"
+            for w in layer_weights
+        )
+        lines.append(f"  layers [{bar}] {active}/{num_layers} (sharp={sharpness:.1f})")
+
+        # Line 3+: 레이어별 가중치 수치 (15개씩)
+        per_row = 15
+        for start in range(0, num_layers, per_row):
+            end = min(start + per_row, num_layers)
+            vals = []
+            for i in range(start, end):
+                w = layer_weights[i]
+                vals.append(f"{w:.3f}"[1:] if w > 0 else " -- ")
+            lines.append(f"   L{start:<2d}: {' '.join(vals)}")
+
+        # ANSI escape: 이전 출력 덮어쓰기
+        n = self._prev_status_lines
+        if n > 0:
+            sys.stdout.write(f"\033[{n}A")
+        for line in lines:
+            sys.stdout.write(f"\033[2K{line}\n")
+        sys.stdout.flush()
+        self._prev_status_lines = len(lines)
 
 
 def plot_losses(loss_history, config, save_dir='KD_Loss'):
     """학습 Loss 그래프를 개별 파일로 생성하여 타임스탬프 폴더에 저장"""
     plots = []
+    dual_plots = []
 
     # 종합 Loss (항상 표시)
     if loss_history['total']:
@@ -320,21 +467,22 @@ def plot_losses(loss_history, config, save_dir='KD_Loss'):
             kl_label = 'KL Divergence (FKL)'
         plots.append((kl_fname, kl_label, loss_history['kd_logit']))
 
-    # Hidden State Loss (alpha_hidden > 0)
+    # Hidden State Loss (alpha_hidden > 0) — progressive + uniform 두 라인
     if config['alpha_hidden'] > 0 and loss_history['hidden']:
-        if config['use_cosine_hidden']:
-            h_fname = 'Hidden_State_CosineSimilarity'
-            h_label = 'Hidden State Loss (Cosine Similarity)'
-        else:
-            h_fname = 'Hidden_State_MSE'
-            h_label = 'Hidden State Loss (MSE)'
-        plots.append((h_fname, h_label, loss_history['hidden']))
+        metric_type = 'Cosine Similarity' if config['use_cosine_hidden'] else 'MSE'
+        # dual plot: progressive + uniform 함께
+        dual_plots.append((
+            f'Hidden_State_{metric_type.replace(" ", "")}',
+            f'Hidden State Loss ({metric_type})',
+            loss_history['hidden'],
+            loss_history.get('hidden_uniform', []),
+        ))
 
     # Task Loss (alpha_task > 0)
     if config['alpha_task'] > 0 and loss_history['task']:
         plots.append(('Task_Loss_CE', 'Task Loss (CE)', loss_history['task']))
 
-    if not plots:
+    if not plots and not dual_plots:
         print("  표시할 Loss 데이터가 없습니다.")
         return
 
@@ -343,7 +491,9 @@ def plot_losses(loss_history, config, save_dir='KD_Loss'):
     sub_dir = os.path.join(save_dir, timestamp)
     os.makedirs(sub_dir, exist_ok=True)
 
-    # 각 Loss를 개별 파일로 저장
+    total_saved = 0
+
+    # 단일 라인 플롯
     for fname, title, data in plots:
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.plot(range(len(data)), data, linewidth=0.8, color='#1f77b4')
@@ -355,8 +505,28 @@ def plot_losses(loss_history, config, save_dir='KD_Loss'):
         fpath = os.path.join(sub_dir, f"{fname}.png")
         plt.savefig(fpath, dpi=150, bbox_inches='tight')
         plt.close()
+        total_saved += 1
 
-    print(f"  Loss 그래프 저장 ({len(plots)}개): {sub_dir}/")
+    # 듀얼 라인 플롯 (progressive + uniform)
+    for fname, title, prog_data, uni_data in dual_plots:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(range(len(prog_data)), prog_data, linewidth=0.8, color='#1f77b4',
+                label='Progressive (optimizer 사용)', alpha=0.8)
+        if uni_data:
+            ax.plot(range(len(uni_data)), uni_data, linewidth=0.8, color='#ff7f0e',
+                    label='Uniform (고정 균등 평균)', alpha=0.8)
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Loss')
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        fpath = os.path.join(sub_dir, f"{fname}.png")
+        plt.savefig(fpath, dpi=150, bbox_inches='tight')
+        plt.close()
+        total_saved += 1
+
+    print(f"  Loss 그래프 저장 ({total_saved}개): {sub_dir}/")
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -377,7 +547,19 @@ if __name__ == "__main__":
                         help="출력 경로 (기본값: models/<student모델명>-KD)")
     parser.add_argument("--dataset", "-d", type=str, default=None,
                         help="로컬 학습 데이터셋 경로 (prepare_dataset.py의 kd_train)")
+    parser.add_argument("--train-attn", action="store_true",
+                        help="어텐션 프로젝션(q,k,v,o_proj)도 학습 대상에 포함")
+    parser.add_argument("--optimizer", type=str, default="adamw",
+                        choices=["muon", "muon-clip", "adamw"],
+                        help="Optimizer 선택 (기본: muon)")
     args = parser.parse_args()
+
+    # --train-attn 시 DIRECT_TRAIN_MODULES 확장
+    if args.train_attn:
+        DIRECT_TRAIN_MODULES = [
+            "gate_proj", "down_proj",
+            "q_proj", "k_proj", "v_proj", "o_proj",
+        ]
 
     # Student 경로 해석
     MODEL_ID = args.model
@@ -575,6 +757,9 @@ if __name__ == "__main__":
         use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
         total_train_steps=total_train_steps,
         loss_history=loss_history,
+        optimizer_type=args.optimizer,
+        muon_lr=learning_rate * 2,   # Muon은 AdamW보다 높은 LR 사용 (×4에서 안정성 위해 ×2로 조정)
+        adamw_lr=learning_rate,
         model=model,
         args=training_args,
         train_dataset=train_ds,
@@ -593,6 +778,8 @@ if __name__ == "__main__":
         kd_features.append(f"AttnTransfer(α={KD_ALPHA_ATTN})")
     if KD_ALPHA_EMBED > 0:
         kd_features.append(f"EmbedMatch(α={KD_ALPHA_EMBED})")
+    kd_features.append(f"Optimizer={args.optimizer}")
+    kd_features.append("ProgressiveKD")
     features_str = ", ".join(kd_features) if kd_features else "none"
 
     print(f"  [{mode_str}] T={KD_TEMPERATURE}, α_task={KD_ALPHA_TASK}, "
@@ -673,6 +860,9 @@ if __name__ == "__main__":
             use_dynamic_alpha=KD_USE_DYNAMIC_ALPHA,
             total_train_steps=steps_per_epoch * total_epochs_trained,
             loss_history=loss_history,
+            optimizer_type=args.optimizer,
+            muon_lr=learning_rate * 2,
+            adamw_lr=learning_rate,
             model=model,
             args=training_args,
             train_dataset=train_ds,
@@ -730,6 +920,9 @@ if __name__ == "__main__":
         "use_lora": USE_LORA,
         "lora_rank": LORA_RANK if USE_LORA else None,
         "direct_train_modules": DIRECT_TRAIN_MODULES if not USE_LORA else None,
+        "optimizer": args.optimizer,
+        "train_attn": args.train_attn,
+        "progressive_kd": True,
         "learning_rate": learning_rate,
         "epochs": total_epochs_trained,
         "train_samples": len(train_ds),

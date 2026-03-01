@@ -134,6 +134,13 @@ def main():
     parser.add_argument("--skip-fp8", action="store_true",
                         help="FP8 Quantization 단계 건너뛰기")
 
+    # 프루닝 & optimizer 설정
+    parser.add_argument("--prune-attn", action="store_true",
+                        help="어텐션 헤드 프루닝 활성화 (기본: 비활성화)")
+    parser.add_argument("--optimizer", type=str, default=None,
+                        choices=["muon", "muon-clip", "adamw"],
+                        help="KD optimizer 선택 (기본: prune-attn이면 muon-clip, 아니면 muon)")
+
     # Width Pruning 설정
     parser.add_argument("--target-size", type=int, default=None,
                         help="Width Pruning 목표 FFN intermediate 차원 (예: 3072, 3584)")
@@ -158,6 +165,11 @@ def main():
     print("=" * 60)
     print(f"  Base model: {base_model}")
     print(f"  Output base: {args.output_base}")
+    # optimizer 결정: 명시 > 자동(prune-attn 기반)
+    effective_optimizer = args.optimizer or ("muon-clip" if args.prune_attn else "muon")
+
+    print(f"  Prune attention: {args.prune_attn}")
+    print(f"  Optimizer: {effective_optimizer}" + (" (auto)" if args.optimizer is None else " (explicit)"))
     print(f"  Skip: dataset={args.skip_dataset_prep}, vocab={args.skip_vocab}, "
           f"width={args.skip_width}, kd={args.skip_kd}, fp8={args.skip_fp8}")
     print()
@@ -227,6 +239,8 @@ def main():
             "--dataset", wp_calib_path,
             "--target-size", str(args.target_size),
         ]
+        if args.prune_attn:
+            wp_cmd.append("--prune-attn")
         run_step("Step 2: Width Pruning", wp_cmd)
         # WidthPruning.py의 기본 출력 패턴: models/<name>-WP<intermediate_size>
         # 출력 경로를 찾기 위해 models/ 하위에서 탐색
@@ -251,7 +265,10 @@ def main():
             "--model", current_model,
             "--teacher", teacher_model,
             "--dataset", kd_train_path,
+            "--optimizer", effective_optimizer,
         ]
+        if args.prune_attn:
+            kd_cmd.append("--train-attn")
         run_step("Step 3: KD Recovery", kd_cmd)
         # 기본 출력: models/<name>-KD
         kd_output = os.path.join(args.output_base,
