@@ -1,6 +1,6 @@
 # EXAONE-4.0-1.2B 모델 경량화 해커톤
 > [대회 홈페이지↗](https://dacon.io/competitions/official/236673/overview/description) <br>
-> 26년 2월 26일 오전 10시 마감
+> 26년 2월 26일 오전 10시 마감 <br>
 > 결과는 **[복기록.md](복기록.md)** 참조
 
 ## 주제
